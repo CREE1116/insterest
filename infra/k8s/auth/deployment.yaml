@@ -41,6 +41,12 @@ spec:
         - name: SECRET_KEY
           value: "k8s-local-secret-key"
         - name: GOOGLE_CLIENT_ID
-          value: "your-google-client-id.apps.googleusercontent.com"
+          valueFrom:
+            secretKeyRef:
+              name: auth-secrets
+              key: GOOGLE_CLIENT_ID
         - name: GOOGLE_CLIENT_SECRET
-          value: "your-google-client-secret"
+          valueFrom:
+            secretKeyRef:
+              name: auth-secrets
+              key: GOOGLE_CLIENT_SECRET
