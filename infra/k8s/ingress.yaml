@@ -1,0 +1,143 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      # --- User & Profile & Collection (user-service) ---
+      - path: /api/v1/users/me
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8006
+      - path: /api/v1/users/batch
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8006
+      - path: /api/v1/collections
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8006
+
+      # --- Auth & Social (auth-service) ---
+      - path: /api/v1/auth
+        pathType: Prefix
+        backend:
+          service:
+            name: auth-service
+            port:
+              number: 8000
+      - path: /api/v1/users
+        pathType: Prefix
+        backend:
+          service:
+            name: auth-service
+            port:
+              number: 8000
+
+      # --- Search & Discovery (recommendation-service) ---
+      # 정확한 매칭을 위해 /search 와 /discovery 명시
+      - path: /api/v1/search
+        pathType: Prefix
+        backend:
+          service:
+            name: recommendation-service
+            port:
+              number: 8008
+      - path: /api/v1/discovery
+        pathType: Prefix
+        backend:
+          service:
+            name: recommendation-service
+            port:
+              number: 8008
+      - path: /api/v1/intel
+        pathType: Prefix
+        backend:
+          service:
+            name: recommendation-service
+            port:
+              number: 8008
+
+      # --- Upload & Content (upload-service) ---
+      - path: /api/v1/upload
+        pathType: Prefix
+        backend:
+          service:
+            name: upload-service
+            port:
+              number: 8001
+
+      # --- Interaction (interaction-service) ---
+      - path: /api/v1/interactions
+        pathType: Prefix
+        backend:
+          service:
+            name: interaction-service
+            port:
+              number: 8004
+
+      # --- Comment (comment-service) ---
+      - path: /api/v1/comments
+        pathType: Prefix
+        backend:
+          service:
+            name: comment-service
+            port:
+              number: 8005
+
+      # --- Generation (generation-service) ---
+      - path: /api/v1/ws/generate
+        pathType: Prefix
+        backend:
+          service:
+            name: generation-service
+            port:
+              number: 8002
+
+      # --- Static Assets ---
+      - path: /profiles
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 8006
+      - path: /uploads
+        pathType: Prefix
+        backend:
+          service:
+            name: upload-service
+            port:
+              number: 8001
+      - path: /outputs
+        pathType: Prefix
+        backend:
+          service:
+            name: generation-service
+            port:
+              number: 8002
+
+      # --- Frontend ---
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 80

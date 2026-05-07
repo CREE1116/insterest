@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            cp /patch/index.html /usr/share/nginx/html/index.html && \
+            cp /patch/app.js /usr/share/nginx/html/app.js && \
+            cp /patch/style.css /usr/share/nginx/html/style.css && \
+            nginx -g 'daemon off;'
+        volumeMounts:
+        - name: patch-vol
+          mountPath: /patch
+      volumes:
+      - name: patch-vol
+        configMap:
+          name: feed-test-frontend-html
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80

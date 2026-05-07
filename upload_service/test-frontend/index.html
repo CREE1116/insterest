@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interest - Unified Dashboard</title>
+    <style>
+        :root { --primary: #0d6efd; --success: #198754; --bg: #f8f9fa; --text: #212529; }
+        body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; line-height: 1.6; background-color: var(--bg); color: var(--text); }
+        
+        h1 { text-align: center; margin-bottom: 30px; font-weight: 800; letter-spacing: -1px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
+        @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+        
+        section { background: white; border: 1px solid #e9ecef; padding: 25px; margin-bottom: 25px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
+        h2 { margin-top: 0; font-size: 1.25rem; border-bottom: 2px solid #f1f3f5; padding-bottom: 12px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+        
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.9rem; color: #495057; }
+        input, textarea { width: 100%; padding: 12px; border: 1px solid #dee2e6; border-radius: 8px; box-sizing: border-box; font-size: 0.95rem; }
+        
+        button { background: var(--primary); color: white; border: none; padding: 12px 20px; cursor: pointer; border-radius: 8px; font-weight: 600; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+        button:hover { opacity: 0.9; transform: translateY(-1px); }
+        button:disabled { background: #adb5bd; transform: none; }
+        .btn-secondary { background: #6c757d; }
+        .btn-success { background: var(--success); }
+        .btn-danger { background: #dc3545; }
+
+        .status-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding: 12px 24px; background: white; border-radius: 12px; border: 1px solid #e9ecef; }
+        
+        /* Archive Grid */
+        .archive-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; }
+        .archive-card { border: 1px solid #e9ecef; border-radius: 12px; overflow: hidden; background: white; transition: all 0.2s; display: flex; flex-direction: column; }
+        .archive-card:hover { border-color: var(--primary); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
+        .card-img-wrapper { width: 100%; aspect-ratio: 1/1; overflow: hidden; background: #eee; cursor: pointer; position: relative; }
+        .card-img-wrapper img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .card-body { padding: 12px; flex-grow: 1; display: flex; flex-direction: column; }
+        .card-meta { font-size: 0.75rem; color: #999; margin-bottom: 8px; }
+        
+        /* AI Preview */
+        .ai-preview { display: none; margin-top: 20px; padding: 20px; background: #f0f7ff; border-radius: 12px; border: 2px dashed var(--primary); }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); align-items: center; justify-content: center; }
+        .modal-content { max-width: 90%; max-height: 90%; border-radius: 8px; }
+
+        .progress-container { display: none; margin-top: 15px; }
+        .progress-bar { width: 100%; height: 10px; background: #e9ecef; border-radius: 5px; overflow: hidden; }
+        .progress-fill { width: 0%; height: 100%; background: var(--primary); transition: width 0.3s; }
+        
+        /* Tab System */
+        .tabs { display: flex; border-bottom: 2px solid #e9ecef; margin-bottom: 20px; gap: 5px; }
+        .tab-btn { background: none; border: none; color: #6c757d; padding: 10px 15px; font-weight: 600; cursor: pointer; border-radius: 8px 8px 0 0; border-bottom: 3px solid transparent; }
+        .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); background: #f0f7ff; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        /* JSON View */
+        .json-container { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 12px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; overflow-x: auto; max-height: 500px; white-space: pre-wrap; border: 1px solid #333; }
+    </style>
+</head>
+<body>
+    <h1>✨ Interest Unified</h1>
+
+    <div class="status-bar">
+        <div id="authStatus">인증 확인 중...</div>
+        <div id="serverClock" style="font-family: monospace; font-weight: bold;"></div>
+    </div>
+
+    <div class="grid">
+        <!-- Left: Creation -->
+        <div>
+            <section>
+                <h2>🤖 AI Magic Generation</h2>
+                <div class="form-group">
+                    <label>당신의 분위기를 설명해주세요</label>
+                    <textarea id="aiPrompt" rows="3" placeholder="예: 늦은 밤, 도시의 불빛이 창가에 비치는 차분한 분위기..."></textarea>
+                </div>
+                <button id="generateBtn" onclick="generateAIContent()" class="btn-success" style="width: 100%;">🪄 AI 콘텐츠 생성 시작</button>
+                
+                <div id="progressContainer" class="progress-container">
+                    <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+                    <div id="statusText" style="text-align:center; font-size:13px; margin-top:8px; color:var(--primary);"></div>
+                </div>
+
+                <div id="aiResultPreview" class="ai-preview">
+                    <div style="font-weight:bold; margin-bottom:10px;" id="resTitle"></div>
+                    <img id="resImage" style="width:100%; border-radius:8px; cursor:pointer;" onclick="openLightbox(this.src)">
+                    <audio id="resAudio" controls style="width:100%; margin-top:10px;"></audio>
+                </div>
+            </section>
+
+            <section>
+                <h2>📤 Direct Upload</h2>
+                <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div class="form-group">
+                        <label>🖼️ Image</label>
+                        <input type="file" id="imageFile" accept="image/*">
+                    </div>
+                    <div class="form-group">
+                        <label>🎵 Audio</label>
+                        <input type="file" id="audioFile" accept="audio/*">
+                    </div>
+                </div>
+                <button onclick="uploadCombined()" style="width: 100%;">📤 보관함에 업로드</button>
+            </section>
+        </div>
+
+        <!-- Right: Tabs (Archive, Feed, JSON) -->
+        <div>
+            <section id="postSection" style="display: none; border: 2px solid var(--primary); background: #f0f7ff;">
+                <h2>📝 Create New Post</h2>
+                <div style="display: flex; gap: 15px; margin-bottom: 15px;">
+                    <div id="postPreviewImg" style="width: 100px; height: 100px; border-radius: 8px; overflow: hidden; background: #eee;"></div>
+                    <div style="flex: 1;">
+                        <input type="text" id="selectedContentId" readonly style="font-size: 11px; background: #f1f3f5; margin-bottom: 8px;">
+                        <input type="text" id="postHashtags" placeholder="해시태그 (쉼표 구분)">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <textarea id="postCaption" rows="3" placeholder="이 콘텐츠에 대해 한마디..."></textarea>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button onclick="createPost()" style="flex: 2;">🚀 게시하기</button>
+                    <button onclick="cancelPost()" class="btn-secondary" style="flex: 1;">취소</button>
+                </div>
+            </section>
+
+            <section>
+                <div class="tabs">
+                    <button class="tab-btn active" onclick="switchTab('archive')">📂 My Archive</button>
+                    <button class="tab-btn" onclick="switchTab('feed')">📱 Global Feed</button>
+                    <button class="tab-btn" onclick="switchTab('json')">📄 JSON View</button>
+                </div>
+
+                <!-- Archive Tab -->
+                <div id="archiveTab" class="tab-content active">
+                    <div style="margin-bottom:15px; display:flex; justify-content:space-between;">
+                        <span style="font-size:0.9rem; color:#666;">보관된 내 콘텐츠</span>
+                        <button onclick="loadArchive()" style="padding:4px 8px; font-size:11px;">🔄 새로고침</button>
+                    </div>
+                    <div id="archiveDisplay" class="archive-grid"></div>
+                </div>
+
+                <!-- Feed Tab -->
+                <div id="feedTab" class="tab-content">
+                    <div style="margin-bottom:15px; display:flex; justify-content:space-between;">
+                        <span style="font-size:0.9rem; color:#666;">전체 게시물 피드</span>
+                        <button onclick="loadFeed()" style="padding:4px 8px; font-size:11px;">🔄 새로고침</button>
+                    </div>
+                    <div id="feedDisplay"></div>
+                </div>
+
+                <!-- JSON Tab -->
+                <div id="jsonTab" class="tab-content">
+                    <div style="margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">
+                        <span id="jsonTargetName" style="font-weight:bold; color:var(--primary);">Archive JSON</span>
+                        <button onclick="updateJsonView()" style="padding:4px 8px; font-size:11px;">🔄 Re-parse</button>
+                    </div>
+                    <div id="jsonDisplay" class="json-container">데이터가 없습니다.</div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <div id="lightbox" class="modal" onclick="this.style.display='none'">
+        <img class="modal-content" id="lightboxImg">
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+        let lastResponseData = { archive: [], feed: [] };
+        let currentTab = 'archive';
+
+        function switchTab(tabId) {
+            currentTab = tabId;
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            // Activate clicked tab
+            event.target.classList.add('active');
+            document.getElementById(tabId + 'Tab').classList.add('active');
+            
+            if (tabId === 'json') updateJsonView();
+        }
+
+        function updateJsonView() {
+            // Find which non-json tab was last active to show its data
+            const prevTab = document.querySelector('.tab-btn.active:not([onclick*="json"])')?.innerText || "Archive";
+            const target = prevTab.includes('Feed') ? 'feed' : 'archive';
+            document.getElementById('jsonTargetName').innerText = prevTab + " JSON";
+            document.getElementById('jsonDisplay').innerText = JSON.stringify(lastResponseData[target], null, 2);
+        }
+
+        async function checkAuth() {
+            const authStatus = document.getElementById('authStatus');
+            try {
+                const res = await fetch(`${API_BASE}/users/me`, { credentials: 'include' });
+                if (res.ok) {
+                    const user = await res.json();
+                    authStatus.innerHTML = `<span style="color:var(--success)">✅ ${user.full_name || user.email}</span>`;
+                    loadArchive(); loadFeed();
+                } else { throw new Error(); }
+            } catch (e) {
+                authStatus.innerHTML = `<button onclick="location.href='/auth-ui'">로그인이 필요합니다</button>`;
+            }
+        }
+
+        function generateAIContent() {
+            const prompt = document.getElementById('aiPrompt').value.trim();
+            if(!prompt) return alert('분위기를 입력해주세요!');
+            const btn = document.getElementById('generateBtn');
+            const stat = document.getElementById('statusText');
+            btn.disabled = true; 
+            document.getElementById('progressContainer').style.display = 'block';
+            stat.innerText = 'AI 콘텐츠 생성 중...';
+            
+            const ws = new WebSocket(`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}${API_BASE}/ws/generate`);
+            ws.onopen = () => ws.send(JSON.stringify({ user_input: prompt, duration: 10 }));
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                if(msg.progress) document.getElementById('progressFill').style.width = msg.progress + '%';
+                if(msg.message) stat.innerText = 'AI 콘텐츠 생성 중... ' + msg.message;
+                if(msg.status === 'completed') {
+                    const d = msg.data;
+                    document.getElementById('resImage').src = `/outputs/${d.image_url.split('/').pop()}?t=${Date.now()}`;
+                    document.getElementById('resAudio').src = `/outputs/${d.music_url.split('/').pop()}?t=${Date.now()}`;
+                    document.getElementById('aiResultPreview').style.display = 'block'; 
+                    btn.disabled = false; 
+                    setTimeout(() => { loadArchive(); }, 3000);
+                }
+            };
+        }
+
+        async function uploadCombined() {
+            const img = document.getElementById('imageFile');
+            const aud = document.getElementById('audioFile');
+            if(!img.files[0]) return alert('이미지는 필수입니다.');
+            const fd = new FormData();
+            fd.append('image_file', img.files[0]);
+            if(aud.files[0]) fd.append('audio_file', aud.files[0]);
+
+            try {
+                const res = await fetch(`${API_BASE}/media/upload-combined`, { method:'POST', body:fd, credentials:'include' });
+                if(!res.ok) throw new Error(await res.text());
+                alert('업로드 완료!');
+                img.value=aud.value=''; loadArchive();
+            } catch(e) { alert('실패: ' + e.message); }
+        }
+
+        async function loadArchive() {
+            try {
+                const res = await fetch(`${API_BASE}/content/archive`, { credentials: 'include' });
+                const data = await res.json();
+                lastResponseData.archive = data;
+                const display = document.getElementById('archiveDisplay');
+                display.innerHTML = data.map(item => {
+                    const img = item.media_list.find(m => m.type === 'image')?.url || '';
+                    return `<div class="archive-card">
+                        <div class="card-img-wrapper" onclick="openLightbox('${img}')">
+                            <img src="${img}" onerror="this.src='https://placehold.co/200?text=Error'">
+                        </div>
+                        <div class="card-body">
+                            <div class="card-meta">${new Date(item.created_at).toLocaleDateString()}</div>
+                            <button onclick="preparePost('${item.id}', '${img}')" style="width:100%; padding:6px; font-size:12px;">🚀 게시</button>
+                        </div>
+                    </div>`;
+                }).join('');
+            } catch(e) { console.error('Archive load fail', e); }
+        }
+
+        function preparePost(id, img) {
+            document.getElementById('postSection').style.display = 'block';
+            document.getElementById('selectedContentId').value = id;
+            document.getElementById('postCaption').value = ''; 
+            document.getElementById('postPreviewImg').innerHTML = `<img src="${img}" style="width:100%; height:100%; object-fit:cover;">`;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        async function createPost() {
+            const id = document.getElementById('selectedContentId').value;
+            const cap = document.getElementById('postCaption').value;
+            const tags = document.getElementById('postHashtags').value.split(/[, ]+/).filter(t => t);
+            const res = await fetch(`${API_BASE}/content/`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ content_id:id, caption:cap, hashtags:tags }),
+                credentials:'include'
+            });
+            if(res.ok) { alert('게시되었습니다!'); document.getElementById('postSection').style.display='none'; loadFeed(); }
+        }
+
+        async function loadFeed() {
+            try {
+                const res = await fetch(`${API_BASE}/content/feed`, { credentials: 'include' });
+                const data = await res.json();
+                lastResponseData.feed = data;
+                document.getElementById('feedDisplay').innerHTML = data.map(post => {
+                    const img = post.content.media_list.find(m => m.type === 'image')?.url || '';
+                    return `<div style="border-bottom:1px solid #eee; padding:20px 0;">
+                        <div style="font-weight:bold; margin-bottom:8px; display:flex; justify-content:space-between;">
+                            <span>👤 ${post.user_id.substring(0,8)}...</span>
+                            <span style="font-size:11px; color:#999;">${new Date(post.created_at).toLocaleDateString()}</span>
+                        </div>
+                        <div style="font-size:15px; margin-bottom:12px; white-space:pre-wrap;">${post.caption || ''}</div>
+                        <img src="${img}" style="width:100%; border-radius:12px; cursor:pointer;" onclick="openLightbox('${img}')" onerror="this.src='https://placehold.co/400?text=Image+Not+Found'">
+                        <div style="color:var(--primary); font-size:14px; margin-top:10px;">${post.hashtags.map(h => '#' + h.tag).join(' ')}</div>
+                    </div>`;
+                }).join('');
+            } catch(e) { console.error('Feed load fail', e); }
+        }
+
+        function openLightbox(src) { 
+            if(!src) return;
+            document.getElementById('lightboxImg').src = src; 
+            document.getElementById('lightbox').style.display = 'flex'; 
+        }
+
+        function cancelPost() { document.getElementById('postSection').style.display = 'none'; }
+        
+        setInterval(() => { document.getElementById('serverClock').innerText = new Date().toLocaleTimeString(); }, 1000);
+        checkAuth();
+    </script>
+</body>
+</html>

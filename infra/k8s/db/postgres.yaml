@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+data:
+  init.sql: |
+    CREATE SCHEMA IF NOT EXISTS auth;
+    CREATE SCHEMA IF NOT EXISTS upload;
+    CREATE SCHEMA IF NOT EXISTS interaction;
+    CREATE SCHEMA IF NOT EXISTS search;
+    
+    -- Auth Schema
+    CREATE TABLE IF NOT EXISTS auth.users (
+        id UUID PRIMARY KEY,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        hashed_password VARCHAR(255),
+        nickname VARCHAR(255),
+        profile_image VARCHAR(512),
+        is_active BOOLEAN DEFAULT TRUE,
+        is_verified BOOLEAN DEFAULT FALSE,
+        is_superuser BOOLEAN DEFAULT FALSE,
+        social_provider VARCHAR(50),
+        social_id VARCHAR(255),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE
+    );
+
+    -- Interaction Schema (기초 테이블들)
+    CREATE TABLE IF NOT EXISTS interaction.likes (
+        user_id UUID NOT NULL,
+        post_id UUID NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, post_id)
+    );
+    CREATE TABLE IF NOT EXISTS interaction.saves (
+        user_id UUID NOT NULL,
+        post_id UUID NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, post_id)
+    );
+    CREATE TABLE IF NOT EXISTS interaction.watch_times (
+        user_id UUID NOT NULL,
+        post_id UUID NOT NULL,
+        duration_seconds FLOAT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Upload Schema
+    CREATE TABLE IF NOT EXISTS upload.content (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL,
+        content_type VARCHAR(50) NOT NULL,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        is_deleted BOOLEAN DEFAULT FALSE
+    );
+
+    CREATE TABLE IF NOT EXISTS upload.post (
+        id UUID PRIMARY KEY,
+        content_id UUID NOT NULL REFERENCES upload.content(id),
+        user_id UUID NOT NULL,
+        caption TEXT,
+        like_count INTEGER DEFAULT 0,
+        view_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE,
+        is_deleted BOOLEAN DEFAULT FALSE
+    );
+
+    -- Search Schema (추천/검색용 벡터 테이블 - 멀티모달 최적화)
+    CREATE TABLE IF NOT EXISTS search.post_vectors (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        post_id UUID UNIQUE NOT NULL,
+        caption_vector BYTEA NOT NULL,  -- 768-dim (SBERT)
+        hashtag_vector BYTEA,           -- 768-dim (SBERT)
+        image_vector BYTEA,             -- 512-dim (CLIP)
+        content_text JSONB,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE
+    );
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1024Mi"
+        env:
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "postgres"
+        - name: POSTGRES_DB
+          value: "auth_db"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d/
+      volumes:
+      - name: init-script
+        configMap:
+          name: postgres-init-script

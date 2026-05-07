@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-users-fix
+data:
+  user_model.py: |
+    import uuid
+    from sqlalchemy import Boolean, Column, String, DateTime, func
+    from sqlalchemy.dialects.postgresql import UUID
+    from sqlalchemy.orm import DeclarativeBase
+    class Base(DeclarativeBase): pass
+    class User(Base):
+        __tablename__ = "users"
+        __table_args__ = {"schema": "auth"}
+        id = Column(UUID(as_uuid=True), primary_key=True, index=True, default=uuid.uuid4)
+        email = Column(String, unique=True, index=True, nullable=False)
+        hashed_password = Column(String, nullable=True)
+        full_name = Column(String, index=True)
+        profile_image_url = Column(String, nullable=True)
+        is_active = Column(Boolean, default=True)
+        is_verified = Column(Boolean, default=False)
+        is_superuser = Column(Boolean, default=False)
+        created_at = Column(DateTime(timezone=True), server_default=func.now())
+  user_schema.py: |
+    import uuid
+    from typing import Optional, List
+    from pydantic import BaseModel, EmailStr
+    class UserBase(BaseModel):
+        email: Optional[EmailStr] = None
+        full_name: Optional[str] = None
+        profile_image_url: Optional[str] = None
+    class UserCreate(UserBase):
+        email: EmailStr
+        password: str
+    class UserUpdate(BaseModel):
+        full_name: Optional[str] = None
+        profile_image_url: Optional[str] = None
+        password: Optional[str] = None
+    class User(UserBase):
+        id: uuid.UUID
+        is_active: bool
+        class Config: from_attributes = True
+    class Token(BaseModel):
+        access_token: str
+        token_type: str
+    class TokenPayload(BaseModel):
+        sub: Optional[str] = None
+        exp: Optional[int] = None
+  users_endpoint.py: |
+    from typing import Any, List
+    from fastapi import APIRouter, Depends, Query
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy import select
+    from app.api.deps import get_current_user
+    from app.db.session import get_db
+    from app.models.user import User
+    from app.schemas.user import User as UserSchema, UserUpdate
+    import uuid
+    router = APIRouter()
+    @router.get("/me", response_model=UserSchema)
+    def read_user_me(current_user: User = Depends(get_current_user)) -> Any:
+        return current_user
+    @router.put("/me", response_model=UserSchema)
+    async def update_user_me(*, db: AsyncSession = Depends(get_db), user_in: UserUpdate, current_user: User = Depends(get_current_user)) -> Any:
+        if user_in.full_name: current_user.full_name = user_in.full_name
+        if user_in.profile_image_url: current_user.profile_image_url = user_in.profile_image_url
+        if user_in.password:
+            from app.core.security import get_password_hash
+            current_user.hashed_password = get_password_hash(user_in.password)
+        db.add(current_user); await db.commit(); await db.refresh(current_user)
+        return current_user
+    @router.get("/batch", response_model=List[UserSchema])
+    async def get_users_batch(*, db: AsyncSession = Depends(get_db), user_ids: List[uuid.UUID] = Query(...)) -> Any:
+        result = await db.execute(select(User).where(User.id.in_(user_ids)))
+        return result.scalars().all()

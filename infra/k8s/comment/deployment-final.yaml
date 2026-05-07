@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: comment-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: comment-service
+  template:
+    metadata:
+      labels:
+        app: comment-service
+    spec:
+      containers:
+      - name: comment-service
+        image: python:3.12-slim
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            mkdir -p /app/app/api/v1/endpoints /app/app/core /app/app/db /app/app/models
+            touch /app/__init__.py /app/app/__init__.py /app/app/api/__init__.py /app/app/api/v1/__init__.py /app/app/api/v1/endpoints/__init__.py /app/app/core/__init__.py /app/app/db/__init__.py /app/app/models/__init__.py
+            cp /patch/main.py /app/app/main.py
+            cp /patch/config.py /app/app/core/config.py
+            cp /patch/session.py /app/app/db/session.py
+            cp /patch/models.py /app/app/models/models.py
+            cp /patch/endpoint.py /app/app/api/v1/endpoints/endpoint.py
+            pip install fastapi uvicorn sqlalchemy asyncpg pydantic-settings httpx
+            export PYTHONPATH=/app
+            cd /app && python -m uvicorn app.main:app --host 0.0.0.0 --port 8005
+        ports:
+        - containerPort: 8005
+        env:
+        - name: POSTGRES_SERVER
+          value: "comment-postgres-service"
+        - name: POSTGRES_DB
+          value: "comment_db"
+        - name: POSTGRES_SCHEMA
+          value: "comment"
+        volumeMounts:
+        - name: patch-vol
+          mountPath: /patch
+      volumes:
+      - name: patch-vol
+        configMap:
+          name: comment-patch-code

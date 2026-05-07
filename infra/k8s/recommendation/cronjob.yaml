@@ -1,0 +1,21 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: recommendation-training-job
+spec:
+  schedule: "0 2 * * *" # 매일 새벽 2시에 실행
+  concurrencyPolicy: Forbid # 이전 작업이 끝나지 않았으면 새 작업 시작 안함
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: trigger-training
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              curl -X POST http://recommendation-service:8008/api/v1/intel/train \
+                   -H "Content-Type: application/json"
+          restartPolicy: OnFailure

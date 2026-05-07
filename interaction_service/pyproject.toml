@@ -1,0 +1,16 @@
+[project]
+name = "interaction-service"
+version = "0.1.0"
+description = "Interaction service for Interest"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "asyncpg",
+    "pydantic-settings",
+    "httpx",
+    "python-jose[cryptography]>=3.3.0",
+]
+
+[tool.uv]
+dev-dependencies = []

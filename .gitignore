@@ -1,0 +1,29 @@
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Python
+**/__pycache__/
+**/.venv/
+**/*.pyc
+**/.pytest_cache/
+**/server.log
+**/frontend.log
+
+# Node.js
+**/node_modules/
+**/dist/
+.eslintcache
+
+# Environment
+.env
+.env.local
+
+# ML Models & Outputs
+**/models/
+**/outputs/
+**/*.pth
+
+# Docker
+**/.dockerignore

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Mood Content Generator</title>
+    <style>
+        body { font-family: 'Pretendard', sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; background-color: #f0f2f5; color: #1c1e21; }
+        .container { background: white; padding: 40px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
+        h1 { text-align: center; color: #1a73e8; margin-bottom: 30px; }
+        .input-group { margin-bottom: 25px; }
+        label { display: block; margin-bottom: 10px; font-weight: 600; color: #5f6368; }
+        textarea { width: 100%; height: 100px; padding: 15px; border: 2px solid #e8eaed; border-radius: 12px; font-size: 16px; resize: none; transition: border-color 0.3s; box-sizing: border-box; }
+        textarea:focus { outline: none; border-color: #1a73e8; }
+        button { width: 100%; padding: 16px; background-color: #1a73e8; color: white; border: none; border-radius: 12px; font-size: 18px; font-weight: 600; cursor: pointer; transition: background-color 0.3s, transform 0.1s; }
+        button:hover { background-color: #1557b0; }
+        button:active { transform: scale(0.98); }
+        button:disabled { background-color: #dadce0; cursor: not-allowed; }
+
+        .progress-container { display: none; margin-top: 30px; }
+        .progress-bar { width: 100%; height: 12px; background-color: #e8eaed; border-radius: 6px; overflow: hidden; }
+        .progress-fill { width: 0%; height: 100%; background-color: #1a73e8; transition: width 0.5s ease; }
+        .status-text { margin-top: 15px; font-weight: 500; color: #1a73e8; text-align: center; }
+
+        #result { margin-top: 40px; display: none; animation: fadeIn 0.8s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .result-header { border-bottom: 2px solid #f0f2f5; padding-bottom: 15px; margin-bottom: 25px; }
+        .result-title { font-size: 24px; font-weight: 700; color: #202124; margin: 0; }
+        .mood-summary { font-style: italic; color: #70757a; margin-top: 8px; }
+
+        .media-grid { display: grid; grid-template-columns: 1fr; gap: 25px; margin-bottom: 30px; }
+        @media (min-width: 600px) { .media-grid { grid-template-columns: 1fr 1.2fr; } }
+        
+        .image-box img { width: 100%; border-radius: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .audio-box { display: flex; flex-direction: column; justify-content: center; background: #f8f9fa; padding: 20px; border-radius: 15px; border: 1px solid #e8eaed; }
+        audio { width: 100%; margin-top: 10px; }
+
+        .prompt-info { background: #fff8e1; padding: 20px; border-radius: 12px; border-left: 5px solid #ffc107; margin-top: 20px; }
+        .prompt-info h3 { margin-top: 0; font-size: 16px; color: #856404; }
+        .prompt-text { font-family: 'Courier New', Courier, monospace; font-size: 14px; color: #5f6368; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+        .prompt-label { font-weight: bold; color: #3c4043; display: block; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✨ AI 무드 콘텐츠 생성기</h1>
+        <div class="input-group">
+            <label for="prompt">현재 느끼는 감정이나 원하는 분위기를 설명해주세요</label>
+            <textarea id="prompt" placeholder="예: 비오는 창가에서 즐기는 따뜻한 커피 한 잔의 여유..."></textarea>
+        </div>
+        <button id="generateBtn">감각적인 콘텐츠 생성 시작</button>
+        
+        <div id="progressContainer" class="progress-container">
+            <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+            <div id="statusText" class="status-text">해석 중...</div>
+        </div>
+
+        <div id="result">
+            <div class="result-header">
+                <h2 id="resTitle" class="result-title"></h2>
+                <div id="resMood" class="mood-summary"></div>
+            </div>
+            
+            <div class="media-grid">
+                <div class="image-box">
+                    <img id="resImage" src="">
+                </div>
+                <div class="audio-box">
+                    <label>🎵 생성된 무드 사운드</label>
+                    <audio id="resAudio" controls></audio>
+                    
+                    <div class="prompt-info">
+                        <h3>🤖 AI가 해석한 프롬프트</h3>
+                        <span class="prompt-label">[Visual Prompt]</span>
+                        <div id="resImagePrompt" class="prompt-text"></div>
+                        <span class="prompt-label">[Musical Prompt]</span>
+                        <div id="resMusicPrompt" class="prompt-text"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const generateBtn = document.getElementById('generateBtn');
+        const promptInput = document.getElementById('prompt');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const statusText = document.getElementById('statusText');
+        const result = document.getElementById('result');
+
+        generateBtn.addEventListener('click', () => {
+            const prompt = promptInput.value.trim();
+            if (!prompt) return alert('분위기를 설명해주세요!');
+
+            generateBtn.disabled = true;
+            progressContainer.style.display = 'block';
+            result.style.display = 'none';
+            
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//localhost:8002/api/v1/ws/generate`;
+            const ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ user_input: prompt, duration: 10 }));
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                console.log("Received message:", msg); // 디버깅용 로그
+
+                if (msg.progress) progressFill.style.width = msg.progress + '%';
+                if (msg.message) statusText.innerText = msg.message;
+
+                if (msg.status === 'completed') {
+                    const data = msg.data;
+                    const backendBase = 'http://localhost:8002';
+                    
+                    document.getElementById('resTitle').innerText = data.title || "Untitled";
+                    document.getElementById('resMood').innerText = "Mood: " + (data.mood || "Unique Atmosphere");
+                    
+                    // 이미지 처리: 캐시 방지를 위해 timestamp 추가
+                    const imageUrl = `${backendBase}/outputs/${data.image_url.split('/').pop()}?t=${new Date().getTime()}`;
+                    document.getElementById('resImage').src = imageUrl;
+                    
+                    const audioUrl = `${backendBase}/outputs/${data.music_url.split('/').pop()}?t=${new Date().getTime()}`;
+                    document.getElementById('resAudio').src = audioUrl;
+                    
+                    // 프롬프트 표시 (undefined 방지)
+                    document.getElementById('resImagePrompt').innerText = data.image_prompt || "No visual prompt available";
+                    document.getElementById('resMusicPrompt').innerText = data.music_prompt || "No musical prompt available";
+                    
+                    result.style.display = 'block';
+                    generateBtn.disabled = false;
+                    progressContainer.style.display = 'none';
+                }
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket Error:", err);
+                alert('연결 에러 발생!');
+                generateBtn.disabled = false;
+            };
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: upload-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: upload-service
+spec:
+  ports:
+    - port: 8001
+      targetPort: 8001
+  selector:
+    app: upload-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upload-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: upload-service
+  template:
+    metadata:
+      labels:
+        app: upload-service
+    spec:
+      containers:
+      - name: upload-service
+        image: upload-service:v6
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8001
+        env:
+        - name: POSTGRES_SERVER
+          value: "postgres-service"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "postgres"
+        - name: POSTGRES_DB
+          value: "auth_db"
+        - name: POSTGRES_SCHEMA
+          value: "upload"
+        - name: UPLOAD_DIR
+          value: "/app/uploads"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: GENERATION_SERVICE_URL
+          value: "http://generation-service:8002"
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://postgres:postgres@postgres-service/auth_db"
+        - name: SECRET_KEY
+          value: "k8s-local-secret-key"
+        volumeMounts:
+        - name: upload-storage
+          mountPath: /app/uploads
+      volumes:
+      - name: upload-storage
+        persistentVolumeClaim:
+          claimName: upload-pvc

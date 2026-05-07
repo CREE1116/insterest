@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: generation-secrets
+type: Opaque
+stringData:
+  GEMINI_API_KEY: "AIzaSyBAP8OqirwAQ9fLSsyV9ytwxb4i1dpT550"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: generation-service
+spec:
+  ports:
+    - port: 8002
+      targetPort: 8002
+  selector:
+    app: generation-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: generation-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: generation-service
+  template:
+    metadata:
+      labels:
+        app: generation-service
+    spec:
+      containers:
+      - name: generation-service
+        image: generation-service:v6
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "4Gi"
+          limits:
+            cpu: "2000m"
+            memory: "8Gi"
+        env:
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: generation-secrets
+              key: GEMINI_API_KEY
+        - name: HF_HOME
+          value: "/app/models"
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: TRANSFORMERS_OFFLINE
+          value: "1"
+        - name: SECRET_KEY
+          value: "k8s-local-secret-key"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        ports:
+        - containerPort: 8002
+        volumeMounts:
+        - name: outputs
+          mountPath: /app/outputs
+      volumes:
+      - name: outputs
+        emptyDir: {}

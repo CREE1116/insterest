@@ -1,0 +1,20 @@
+[project]
+name = "upload-service"
+version = "0.1.0"
+description = "Upload service for images and sound"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.135.1",
+    "uvicorn>=0.42.0",
+    "pydantic-settings>=2.13.1",
+    "sqlalchemy[asyncio]>=2.0.48",
+    "asyncpg>=0.31.0",
+    "python-multipart>=0.0.22",
+    "psycopg2-binary>=2.9.11",
+    "aiofiles>=25.1.0",
+    "python-jose[cryptography]>=3.5.0",
+    "aiokafka>=0.13.0",
+    "httpx>=0.28.1",
+    "pydub>=0.25.1",
+]

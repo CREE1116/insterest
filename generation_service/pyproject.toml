@@ -1,0 +1,35 @@
+[project]
+name = "generation-service"
+version = "0.1.0"
+description = "AI generation service for images and music"
+authors = [{ name = "Lee Jongmin", email = "leejongmin774@gmail.com" }]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.31.0",
+    "websockets>=13.0",
+    "google-generativeai>=0.8.0",
+    "google-genai>=0.2.0",
+    "transformers>=4.44.0",
+    "torch>=2.4.0",
+    "scipy>=1.14.0",
+    "diffusers>=0.30.0",
+    "accelerate>=0.34.0",
+    "pydantic-settings>=2.5.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.1",
+    "pydub>=0.25.1",
+    "numpy>=1.26.0",
+    "Pillow>=10.4.0",
+    "aiokafka>=0.13.0",
+    "python-jose[cryptography]>=3.3.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.uv]
+dev-dependencies = ["pytest>=8.3.0"]
