@@ -467,6 +467,7 @@ async def delete_post(
 async def update_post(
     post_id: uuid.UUID,
     post_update: PostUpdate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user_id: uuid.UUID = Depends(get_current_user_id)
 ):
@@ -504,6 +505,13 @@ async def update_post(
     await db.commit()
     await db.refresh(post)
     
+    # 추천 시스템 재동기화 트리거
+    try:
+        background_tasks.add_task(kafka_producer.send_post_updated, post.id, post.content_id, current_user_id)
+        logger.info(f"Kafka update event queued for post: {post.id}")
+    except Exception as e:
+        logger.error(f"Kafka error during update: {e}")
+
     # 리턴 스키마 구성
     p_read = PostRead.model_validate(post)
     p_read.content = enrich_content_read(post.content)

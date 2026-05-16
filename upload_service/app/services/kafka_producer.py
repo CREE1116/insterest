@@ -41,4 +41,14 @@ class KafkaProducer:
         }
         await self.send_event("recommendation.post_created", data)
 
+    async def send_post_updated(self, post_id, content_id, user_id):
+        """추천 시스템 연동을 위한 포스트 수정 이벤트 발행 (재인덱싱 트리거)"""
+        data = {
+            "event_type": "post.updated",
+            "post_id": str(post_id),
+            "content_id": str(content_id),
+            "user_id": str(user_id)
+        }
+        await self.send_event("recommendation.post_updated", data)
+
 kafka_producer = KafkaProducer()
