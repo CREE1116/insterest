@@ -3,15 +3,23 @@ set -e
 
 echo "🚀 Starting GitOps Bootstrap with ArgoCD..."
 
-# 1. 아르고CD 네임스페이스 및 설치
+# 1. 아르고CD 설치
 echo "📦 Installing ArgoCD..."
-kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl create namespace argocd || true
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# 2. Ingress Controller 설치 (로컬 접속용)
+echo "🌐 Installing Ingress Controller (Nginx)..."
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
 
 # 2. 아르고CD 서버가 뜰 때까지 대기
 echo "⏳ Waiting for ArgoCD server to be ready..."
-kubectl wait --namespace argocd \
-  --for=condition=available deployment/argocd-server \
+kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
+
+echo "⏳ Waiting for Ingress Controller to be ready..."
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
   --timeout=300s
 
 # 3. Insterest 인프라 레포지토리를 바라보는 ArgoCD App 생성
@@ -48,8 +56,9 @@ PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath=
 
 # 5. 백그라운드 자동 포트포워딩
 echo "🔌 Starting automatic port-forwarding in the background..."
-pkill -f "port-forward.*argocd" || true
+pkill -f "kubectl port-forward" || true
 kubectl port-forward svc/argocd-server -n argocd 8080:443 > /dev/null 2>&1 &
+kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 80:80 > /dev/null 2>&1 &
 
 echo "✅ GitOps Bootstrap Complete!"
 echo "-------------------------------------------------"
