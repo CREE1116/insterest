@@ -93,21 +93,18 @@ jobs:
         with:
           repository: 'CREE1116/insterest-infra'
           token: ${{ secrets.INFRA_REPO_PAT }}
-          path: 'infra'
+          path: 'infra-repo'
 
       - name: Update Kubernetes manifests
         run: |
-          # The infra repo is checked out at 'infra' path.
-          # ArgoCD expects manifests in the 'k8s' directory of that repo.
+          # Clean old manifests in the infra repo to prevent ghost deployments
+          rm -rf infra-repo/k8s/*
+          mkdir -p infra-repo/k8s
           
-          # Clean old manifests to prevent ghost deployments
-          rm -rf infra/k8s/*
-          mkdir -p infra/k8s
+          # Copy all manifests from main repo (infra/k8s/) to infra repo (infra-repo/k8s/)
+          cp -r infra/k8s/* infra-repo/k8s/
           
-          # Copy all manifests from main repo to the 'k8s' folder in infra repo
-          cp -r infra/k8s/* infra/k8s/
-          
-          cd infra
+          cd infra-repo
           
           # Get the list of changed services as a JSON array from paths-filter
           CHANGES='${{ steps.filter.outputs.changes }}'
