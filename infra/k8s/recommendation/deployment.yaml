@@ -81,7 +81,7 @@ spec:
             cpu: "1.0"
         volumeMounts:
         - name: model-storage
-          mountPath: /app/models
+          mountPath: /data/models
       volumes:
       - name: model-storage
         persistentVolumeClaim:

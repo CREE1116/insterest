@@ -1,19 +1,21 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import logging
 import httpx
 import uuid
 import asyncio
 from typing import List, Dict, Any, Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text
+
 from app.core.config import settings
 from app.ml.model import UnifiedDiscoveryModel
 from app.ml.trainer import UnifiedDiscoveryTrainer
 from app.ml.vector_store import vector_store
 from app.ml.nlp import nlp_embedder
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
 from app.models.models import PostVector
-import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
