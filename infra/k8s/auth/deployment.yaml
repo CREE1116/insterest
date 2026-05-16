@@ -27,7 +27,7 @@ spec:
       containers:
       - name: auth-app
         image: auth-service:v7
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:

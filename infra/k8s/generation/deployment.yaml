@@ -35,7 +35,7 @@ spec:
       containers:
       - name: generation-service
         image: generation-service:v6
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         resources:
           requests:
             cpu: "1000m"

@@ -27,7 +27,7 @@ spec:
       containers:
       - name: interaction-service
         image: interaction-service:v6
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 8004
         env:
