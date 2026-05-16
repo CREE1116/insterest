@@ -78,7 +78,11 @@ class UnifiedDiscoveryModel(nn.Module):
         
         # Scale-normalized Concat
         combined = torch.cat([c_emb, h_emb, i_emb], dim=-1)
-        final_emb = self.fusion_mlp(combined)
+        
+        # 텍스트(Caption)를 베이스로 삼고 나머지를 융합한 뒤, 
+        # 다시 텍스트 벡터를 더해줌으로써(Residual) 텍스트의 정체성을 강제함
+        fused = self.fusion_mlp(combined)
+        final_emb = fused + c_emb 
         
         # ANN 품질을 위해 최종 L2 Normalize
         return F.normalize(final_emb, p=2, dim=-1)

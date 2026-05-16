@@ -117,8 +117,9 @@ class UnifiedDiscoveryTrainer:
             loss_query_item = torch.tensor(0.0).to(user_histories.device)
             loss_query_image = torch.tensor(0.0).to(user_histories.device)
         
-        # Total Loss (모든 Loss를 융합하여 계산)
-        total_loss = loss_discovery + 1.0 * loss_structure + 0.5 * loss_alignment + 1.0 * loss_query_item + 1.0 * loss_query_image
+        # Total Loss (텍스트를 Anchor로 삼아 이미지를 강력하게 정렬)
+        # loss_alignment 가중치를 높여 이미지가 텍스트 공간을 엄격하게 따르게 함
+        total_loss = loss_discovery + 1.0 * loss_structure + 2.0 * loss_alignment + 1.0 * loss_query_item + 2.0 * loss_query_image
         
         total_loss.backward()
         self.optimizer.step()
