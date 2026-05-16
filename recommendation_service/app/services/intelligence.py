@@ -184,73 +184,69 @@ class UnifiedIntelligenceService:
                 if uid not in user_sequences: user_sequences[uid] = []
                 user_sequences[uid].append(pid)
             
-            # 2. 아이템 벡터들 로드 (Lookup용)
+            # 2. 아이템 벡터들 로드 및 임베딩 사전 계산 (속도 최적화 핵심)
             res = await db.execute(select(PostVector))
-            p_vectors = {v.post_id: v for v in res.scalars().all()}
+            all_vectors = res.scalars().all()
+            p_vectors = {v.post_id: v for v in all_vectors}
             
+            # 모든 아이템의 융합 임베딩을 한 번에 계산
+            logger.info(f"⚡ Pre-calculating embeddings for {len(all_vectors)} items...")
+            item_emb_lookup = {}
+            with torch.no_grad():
+                for v in all_vectors:
+                    c = torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    t = torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    item_emb_lookup[v.post_id] = self.model.get_item_embedding(c, t, img).squeeze(0)
+
             if len(user_sequences) < 2:
-                logger.warning("⚠️ 학습할 유저 시퀀스가 부족합니다. Self-reconstruction 모드로 전환합니다.")
-                # (기존의 아이템 특징 학습 로직으로 폴백하는 코드 생략 - 여기서는 시퀀스 학습에 집중)
+                logger.warning("⚠️ 학습할 유저 시퀀스가 부족합니다.")
                 return
 
             # 3. 데이터셋 구성 (시퀀스 -> 타겟)
             train_data = []
             for uid, pids in user_sequences.items():
                 for i in range(1, len(pids)):
-                    hist = pids[:i][-10:] # 최근 10개만 시퀀스로 사용
+                    hist = pids[:i][-10:]
                     target = pids[i]
-                    if target in p_vectors and all(h in p_vectors for h in hist):
+                    if target in item_emb_lookup and all(h in item_emb_lookup for h in hist):
                         train_data.append((hist, target))
 
-            # 4. 루프 학습
-            epochs = 20
-            batch_size = 16
+            # 4. 루프 학습 (에폭 최적화)
+            epochs = 10
+            batch_size = 32
             for epoch in range(epochs):
                 total_loss = 0.0
                 random.shuffle(train_data)
                 for i in range(0, len(train_data), batch_size):
                     batch = train_data[i : i + batch_size]
                     
-                    # 배치 구성
                     hist_embs = []
                     target_caps, target_tags, target_imgs = [], [], []
                     
                     for hist, target in batch:
-                        # 히스토리 임베딩화
-                        h_embs = []
-                        for h_id in hist:
-                            pv = p_vectors[h_id]
-                            # 아이템의 융합 벡터 추출 (copy()를 추가하여 writable 에러 방지)
-                            c = torch.from_numpy(np.frombuffer(pv.caption_vector, dtype=np.float32).copy()).to(self.device)
-                            t = torch.from_numpy(np.frombuffer(pv.hashtag_vector, dtype=np.float32).copy()).to(self.device)
-                            img = torch.from_numpy(np.frombuffer(pv.image_vector, dtype=np.float32).copy()).to(self.device)
-                            with torch.no_grad():
-                                h_embs.append(self.model.get_item_embedding(c.unsqueeze(0), t.unsqueeze(0), img.unsqueeze(0)).squeeze(0))
-                        
-                        # 패딩 (10개 고정)
+                        # 이미 계산된 임베딩을 Lookup (계산 불필요!)
+                        h_embs = [item_emb_lookup[h_id] for h_id in hist]
                         while len(h_embs) < 10:
                             h_embs.insert(0, torch.zeros(128).to(self.device))
                         hist_embs.append(torch.stack(h_embs))
                         
-                        # 타겟 메타데이터
                         pv_t = p_vectors[target]
                         target_caps.append(torch.from_numpy(np.frombuffer(pv_t.caption_vector, dtype=np.float32).copy()).to(self.device))
                         target_tags.append(torch.from_numpy(np.frombuffer(pv_t.hashtag_vector, dtype=np.float32).copy()).to(self.device))
                         target_imgs.append(torch.from_numpy(np.frombuffer(pv_t.image_vector, dtype=np.float32).copy()).to(self.device))
                     
-                    # 텐서 변환 및 학습
                     u_hist = torch.stack(hist_embs)
                     t_items = {
                         "caption": torch.stack(target_caps),
                         "hashtag": torch.stack(target_tags),
                         "image": torch.stack(target_imgs)
                     }
-                    q_signal = t_items["caption"] # 텍스트 중심 쿼리 신호
-                    
-                    loss = self.trainer.train_discovery_step(u_hist, t_items, q_signal)
+                    loss = self.trainer.train_discovery_step(u_hist, t_items, t_items["caption"])
                     total_loss += loss
                 
-                logger.info(f"📁 [Epoch {epoch+1}/{epochs}] Loss: {total_loss/(len(train_data)//batch_size+1):.4f}")
+                if (epoch + 1) % 5 == 0:
+                    logger.info(f"📁 [Epoch {epoch+1}/{epochs}] Loss: {total_loss/(len(train_data)//batch_size+1):.4f}")
 
             self.trainer.save_model(settings.MODEL_SAVE_PATH)
             logger.info("✅ Recommendation Sequence Training completed.")
