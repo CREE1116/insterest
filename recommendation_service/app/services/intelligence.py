@@ -99,60 +99,35 @@ class UnifiedIntelligenceService:
         final_ids = []
         
         try:
-            # 1. Strict Text Match (검색어가 있을 경우 최우선순위)
+            # 1. Pure Semantic Vector Search (AI-driven context matching)
+            user_vec = None
+            if user_id and use_personalization:
+                user_vec = await self.get_user_context(user_id, db, exclude_ids=exclude_history_ids)
+            
+            if user_vec is None:
+                user_vec = torch.zeros((1, 128)).to(self.device)
+
+            query_vec = None
             if query_text:
-                search_pattern = f"%{query_text}%"
-                text_stmt = text("""
-                    SELECT p.id FROM upload.post p 
-                    LEFT JOIN upload.content c ON p.content_id = c.id
-                    LEFT JOIN upload.generation_meta g ON c.id = g.content_id
-                    WHERE p.is_deleted = FALSE
-                    AND (p.caption ILIKE :q OR g.image_prompt ILIKE :q)
-                    ORDER BY p.created_at DESC
-                    LIMIT :l
-                """).bindparams(q=search_pattern, l=limit+skip) # 페이징 고려
-                
-                text_result = await db.execute(text_stmt)
-                final_ids = [row[0] for row in text_result.all()]
-                logger.info(f"📝 Text match found {len(final_ids)} ids")
+                # 텍스트 검색어를 128차원 벡터로 변환
+                raw_query_vec = nlp_embedder.embed_text(query_text).unsqueeze(0).to(self.device)
+                with torch.no_grad():
+                    query_vec = self.model.get_query_embedding(raw_query_vec)
+                    query_vec = query_vec * query_weight
+            else:
+                query_vec = torch.zeros((1, 128)).to(self.device)
 
-            # 2. Semantic Vector Search (부족한 부분을 채움)
-            if len(final_ids) < (skip + limit):
-                needed = (skip + limit) - len(final_ids)
-                
-                user_vec = None
-                if user_id and use_personalization:
-                    # exclude_history_ids 전달 (Leak 방지)
-                    user_vec = await self.get_user_context(user_id, db, exclude_ids=exclude_history_ids)
-                
-                if user_vec is None:
-                    user_vec = torch.zeros((1, 128)).to(self.device)
+            # Target Vector 생성 (검색어 벡터 + 사용자 취향 벡터 결합)
+            with torch.no_grad():
+                target_vec = self.model.discovery(query_vec, user_vec)
+            
+            target_vec_np = target_vec.squeeze(0).cpu().numpy()
 
-                query_vec = None
-                if query_text:
-                    raw_query_vec = nlp_embedder.embed_text(query_text).unsqueeze(0).to(self.device)
-                    with torch.no_grad():
-                        query_vec = self.model.get_query_embedding(raw_query_vec)
-                        query_vec = query_vec * query_weight
-                else:
-                    query_vec = torch.zeros((1, 128)).to(self.device)
-
-                # Target Vector
-                if not use_personalization and query_text:
-                    target_vec = F.normalize(query_vec, p=2, dim=-1)
-                else:
-                    with torch.no_grad():
-                        target_vec = self.model.discovery(query_vec, user_vec)
-                
-                target_vec_np = target_vec.squeeze(0).cpu().numpy()
-
-                if torch.norm(target_vec).item() > 1e-6:
-                    search_k = skip + limit + 20
-                    vector_ids = vector_store.search_knn(target_vec_np, k=search_k)
-                    for vid in vector_ids:
-                        if vid not in final_ids:
-                            final_ids.append(vid)
-                            if len(final_ids) >= (skip + limit): break
+            if torch.norm(target_vec).item() > 1e-6:
+                # 벡터 스토어에서 가장 유사한 아이템 검색
+                search_k = skip + limit + 20
+                final_ids = vector_store.search_knn(target_vec_np, k=search_k)
+                logger.info(f"🧠 Pure semantic search found {len(final_ids)} ids")
 
             # 3. Popularity Fallback (최후의 수단)
             if len(final_ids) < (skip + limit):

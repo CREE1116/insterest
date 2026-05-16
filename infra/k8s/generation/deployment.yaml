@@ -9,6 +9,17 @@ stringData:
   GEMINI_API_KEY: "${GEMINI_API_KEY}"
 ---
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: generation-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
 kind: Service
 metadata:
   name: generation-service
@@ -68,4 +79,5 @@ spec:
           mountPath: /app/outputs
       volumes:
       - name: outputs
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: generation-pvc
