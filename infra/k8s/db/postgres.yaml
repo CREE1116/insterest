@@ -92,6 +92,17 @@ spec:
     app: postgres
   clusterIP: None # Headless service for StatefulSet
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
