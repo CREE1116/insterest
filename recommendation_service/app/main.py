@@ -6,7 +6,7 @@ from app.api.v1.api import api_router
 from app.core.config import settings
 from app.db.session import engine, Base
 from app.ml.vector_store import vector_store
-from app.models.models import PostVector # Ensure models are imported for metadata
+from app.entities.models import PostVector # Ensure models are imported for metadata
 import logging
 import os
 import asyncio

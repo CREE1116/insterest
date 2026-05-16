@@ -15,7 +15,7 @@ from app.ml.model import UnifiedDiscoveryModel
 from app.ml.trainer import UnifiedDiscoveryTrainer
 from app.ml.vector_store import vector_store
 from app.ml.nlp import nlp_embedder
-from app.models.models import PostVector
+from app.entities.models import PostVector
 
 logger = logging.getLogger(__name__)
 
