@@ -31,37 +31,37 @@ class UnifiedIntelligenceService:
         # Load weights if exist
         self.trainer.load_model(settings.MODEL_SAVE_PATH)
 
-    async def discover(self, db: AsyncSession, query_text: str = None, user_id: uuid.UUID = None, 
+    async def discover(self, db: AsyncSession, query_text: str = None, user_id: uuid.UUID = None,
                        limit: int = 20, skip: int = 0, use_personalization: bool = True,
                        exclude_history_ids: List[uuid.UUID] = None,
                        history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
+        """
+        검색 + 개인화 추천:
+        - 아이템 벡터는 Redis에 미리 저장된 128차원 벡터를 사용 (모델 재계산 없음)
+        - 쿼리/유저 벡터만 실시간 계산 후 Redis ANN 검색
+        """
+        from app.ml.vector_store import vector_store
         try:
-            final_ids = []
-            
-            # 1. 텍스트 임베딩 및 투영 (768 -> 128)
+            # 1. 검색어 벡터 계산
             query_vec_128 = None
             if query_text:
                 raw_vec = nlp_embedder.embed_text(query_text).to(self.device).unsqueeze(0)
                 with torch.no_grad():
-                    # 새롭게 수정된 전용 투영 레이어 사용
                     query_vec_128 = self.model.get_query_embedding(raw_vec).squeeze(0).cpu().numpy()
 
-            # 2. 개인화 추천
+            # 2. 유저 히스토리 → 유저 벡터 계산
             user_vec = None
             if (user_id or history_ids) and use_personalization:
                 if not history_ids and user_id:
-                    stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at DESC LIMIT 10")
+                    stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at ASC LIMIT 10")
                     res = await db.execute(stmt, {"uid": user_id})
                     history_ids = [row[0] for row in res.all()]
-                    # AI(GRU)가 시계열을 정확히 인식하도록 과거->최신(ASC) 순서로 다시 뒤집어줍니다.
-                    history_ids.reverse()
-                
+
                 if history_ids:
-                    # 히스토리 임베딩 구성
-                    hist_embs = []
                     res = await db.execute(select(PostVector).where(PostVector.post_id.in_(history_ids)))
                     p_vectors = {v.post_id: v for v in res.scalars().all()}
-                    
+
+                    hist_embs = []
                     with torch.no_grad():
                         for h_id in history_ids:
                             if h_id in p_vectors:
@@ -70,58 +70,35 @@ class UnifiedIntelligenceService:
                                 t = torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                 img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                 hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
-                        
+
                         if hist_embs:
-                            while len(hist_embs) < 10: hist_embs.insert(0, torch.zeros(128).to(self.device))
+                            while len(hist_embs) < 10:
+                                hist_embs.insert(0, torch.zeros(128).to(self.device))
                             u_hist = torch.stack(hist_embs).unsqueeze(0)
                             user_vec = self.model.get_user_embedding(u_hist).squeeze(0).cpu().numpy()
 
-            # 3. 벡터 검색 실행 (Fusion Search)
-            # 모델의 훈련 과정과 100% 동일한 수학적 융합(Dynamic Gating + Interaction) 방식을 사용합니다.
-            query_vec = None
+            # 3. Discovery Fusion → Redis ANN 검색
             if query_vec_128 is not None or user_vec is not None:
                 with torch.no_grad():
-                    # 빈 값(None)일 경우, 훈련 때와 동일하게 0벡터를 투영레이어에 통과시킨 '기본 가중치 벡터'를 사용해야 합니다. (단순 0벡터는 OOD 에러 유발)
-                    if query_vec_128 is not None:
-                        q_t = torch.from_numpy(query_vec_128).to(self.device)
-                    else:
-                        q_t = self.model.get_query_embedding(torch.zeros(1, 768).to(self.device)).squeeze(0)
-                        
-                    if user_vec is not None:
-                        u_t = torch.from_numpy(user_vec).to(self.device)
-                    else:
-                        u_t = self.model.get_user_embedding(torch.zeros(1, 10, 128).to(self.device)).squeeze(0)
-                    
-                    # model.py에 정의된 self.model.discovery() 를 통과시켜 훈련과 실전 환경을 일치시킴
-                    query_vec_t = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0)
-                    query_vec = query_vec_t.cpu().numpy()
+                    q_t = torch.from_numpy(query_vec_128).to(self.device) if query_vec_128 is not None \
+                          else self.model.get_query_embedding(torch.zeros(1, 768, device=self.device)).squeeze(0)
+                    u_t = torch.from_numpy(user_vec).to(self.device) if user_vec is not None \
+                          else torch.zeros(128, device=self.device)
+                    fusion_vec = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0).cpu().numpy()
 
-            if query_vec is not None:
-                res = await db.execute(select(PostVector))
-                all_posts = res.scalars().all()
-                
-                scored = []
-                with torch.no_grad():
-                    for p in all_posts:
-                        if exclude_history_ids and p.post_id in exclude_history_ids: continue
-                        
-                        c = torch.from_numpy(np.frombuffer(p.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        t = torch.from_numpy(np.frombuffer(p.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        img = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
-                        
-                        score = np.dot(query_vec, p_vec_128) / (np.linalg.norm(query_vec) * np.linalg.norm(p_vec_128) + 1e-9)
-                        caption = (p.content_text or {}).get("caption", "")
-                        # UUID 객체를 Pydantic이 안전하게 직렬화할 수 있도록 string으로 명시적 변환
-                        scored.append({"id": str(p.post_id), "score": float(score), "caption": caption})
-                
-                scored.sort(key=lambda x: x["score"], reverse=True)
-                return scored[skip:skip+limit]
+                # Redis HNSW ANN 검색 (미리 저장된 128차원 벡터 사용)
+                result_ids = vector_store.search_knn(fusion_vec, k=limit + len(exclude_history_ids or []) + skip)
+
+                # 이미 본 포스트 제외 후 페이지네이션
+                exclude_set = set(str(i) for i in (exclude_history_ids or []))
+                filtered = [str(pid) for pid in result_ids if str(pid) not in exclude_set]
+                page = filtered[skip: skip + limit]
+                return [{"id": pid, "score": 1.0} for pid in page]
 
             # Fallback: 최신순
-            stmt = text("SELECT id, caption FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
+            stmt = text("SELECT id FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
             res = await db.execute(stmt, {"l": limit, "s": skip})
-            return [{"id": str(row[0]), "score": 0.0, "caption": row[1]} for row in res.all()]
+            return [{"id": str(row[0]), "score": 0.0} for row in res.all()]
 
         except Exception as e:
             logger.error(f"❌ Error in discovery: {e}", exc_info=True)
@@ -188,89 +165,121 @@ class UnifiedIntelligenceService:
 
     async def train_discovery(self, db: AsyncSession):
         """
-        성능 최적화 버전: 에폭당 1회 사전 계산 + 메모리 관리
+        2-Phase 학습:
+        Phase 1 - 아이템 타워: 캡션+해시태그(anchor) → 이미지 정렬 (CLIP-style)
+        Phase 2 - 유저/쿼리 타워: 동결된 아이템 임베딩으로 InfoNCE 학습
         """
         try:
             total_start = time.time()
-            logger.info("🏋️ [Sequence Learning] Starting optimized training pipeline...")
-            
-            # 1. 상호작용 이력 로드
-            t0 = time.time()
-            res = await db.execute(text("SELECT user_id, post_id FROM interaction.likes LIMIT 1000"))
+
+            # ── 데이터 로드 ──────────────────────────────
+            res = await db.execute(text("SELECT user_id, post_id FROM interaction.likes ORDER BY created_at ASC LIMIT 1000"))
             rows = res.all()
-            logger.info(f"⏱️ Step 1 (DB Load): {time.time()-t0:.2f}s")
-            
-            user_sequences = {}
+            user_sequences: Dict[Any, List] = {}
             for uid, pid in rows:
-                if uid not in user_sequences: user_sequences[uid] = []
-                user_sequences[uid].append(pid)
-            
-            # 2. 아이템 로드
+                user_sequences.setdefault(uid, []).append(pid)
+
             res = await db.execute(select(PostVector))
             all_vectors = res.scalars().all()
-            p_vectors = {v.post_id: v for v in all_vectors}
-            
-            if len(user_sequences) < 2:
-                logger.warning("⚠️ 학습할 데이터 부족")
+            if not all_vectors:
+                logger.warning("⚠️ 포스트 데이터 없음")
                 return
+            p_vectors = {v.post_id: v for v in all_vectors}
 
-            # 3. 데이터셋 구성
-            train_data = []
-            for uid, pids in user_sequences.items():
-                for i in range(1, len(pids)):
-                    hist = pids[:i][-10:]
-                    target = pids[i]
-                    if target in p_vectors and all(h in p_vectors for h in hist):
-                        train_data.append((hist, target))
+            # ── Phase 1: 아이템 타워 학습 (50 에폭) ─────
+            logger.info("🔵 [Phase 1] Item Tower training (caption+hashtag → image alignment)...")
+            PHASE1_EPOCHS = 50
+            BATCH = 32
 
-            # 4. 학습 루프
-            t2 = time.time()
-            epochs = 50
-            batch_size = 32
-            
-            for epoch in range(epochs):
-                # 에폭별 임베딩 갱신 (detach로 메모리 보호)
-                item_emb_lookup = {}
-                with torch.no_grad():
-                    for v in all_vectors:
-                        c = torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        t = torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        emb = self.model.get_item_embedding(c, t, img).squeeze(0).detach()
-                        item_emb_lookup[v.post_id] = emb
+            # 전체 포스트 텐서 사전 로드
+            all_caps = torch.stack([
+                torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy())
+                for v in all_vectors
+            ]).to(self.device)
+            all_tags = torch.stack([
+                torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy())
+                for v in all_vectors
+            ]).to(self.device)
+            all_imgs = torch.stack([
+                torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy())
+                for v in all_vectors
+            ]).to(self.device)
 
+            n = len(all_vectors)
+            for epoch in range(PHASE1_EPOCHS):
+                idx = torch.randperm(n)
                 total_loss = 0.0
-                random.shuffle(train_data)
-                for i in range(0, len(train_data), batch_size):
-                    batch = train_data[i : i + batch_size]
-                    hist_embs, target_caps, target_tags, target_imgs = [], [], [], []
-                    
-                    for hist, target in batch:
-                        h_embs = [item_emb_lookup[h_id] for h_id in hist]
-                        while len(h_embs) < 10: h_embs.insert(0, torch.zeros(128).to(self.device))
-                        hist_embs.append(torch.stack(h_embs))
-                        
-                        pv_t = p_vectors[target]
-                        target_caps.append(torch.from_numpy(np.frombuffer(pv_t.caption_vector, dtype=np.float32).copy()).to(self.device))
-                        target_tags.append(torch.from_numpy(np.frombuffer(pv_t.hashtag_vector, dtype=np.float32).copy()).to(self.device))
-                        target_imgs.append(torch.from_numpy(np.frombuffer(pv_t.image_vector, dtype=np.float32).copy()).to(self.device))
-                    
-                    loss = self.trainer.train_discovery_step(
-                        torch.stack(hist_embs), 
-                        {"caption": torch.stack(target_caps), "hashtag": torch.stack(target_tags), "image": torch.stack(target_imgs)},
-                        torch.stack(target_caps)
+                for i in range(0, n, BATCH):
+                    b = idx[i:i+BATCH]
+                    loss = self.trainer.train_item_tower_step(
+                        all_caps[b], all_tags[b], all_imgs[b]
                     )
                     total_loss += loss
-            
-            logger.info(f"⏱️ Step 3 (Training): {time.time()-t2:.2f}s")
+                if (epoch + 1) % 10 == 0:
+                    logger.info(f"  [Phase1] Epoch {epoch+1}/{PHASE1_EPOCHS} loss={total_loss:.4f}")
+
+            logger.info("✅ [Phase 1] Item Tower training complete.")
+
+            # ── Phase 2: 유저/쿼리 타워 학습 (좋아요 데이터 있을 때만) ──
+            if len(user_sequences) >= 2:
+                logger.info("🟢 [Phase 2] User/Query Tower training on FROZEN item embeddings...")
+
+                # 아이템 타워 완전 동결 후 임베딩 한 번에 사전 계산
+                item_emb_lookup: Dict[Any, torch.Tensor] = {}
+                with torch.no_grad():
+                    for idx_v, v in enumerate(all_vectors):
+                        emb = self.model.get_item_embedding(
+                            all_caps[idx_v].unsqueeze(0),
+                            all_tags[idx_v].unsqueeze(0),
+                            all_imgs[idx_v].unsqueeze(0)
+                        ).squeeze(0).detach()
+                        item_emb_lookup[v.post_id] = emb
+
+                train_data = []
+                for uid, pids in user_sequences.items():
+                    for i in range(1, len(pids)):
+                        hist = pids[:i][-10:]
+                        target = pids[i]
+                        if target in p_vectors and all(h in p_vectors for h in hist):
+                            train_data.append((hist, target))
+
+                PHASE2_EPOCHS = 50
+                for epoch in range(PHASE2_EPOCHS):
+                    random.shuffle(train_data)
+                    total_loss = 0.0
+                    for i in range(0, len(train_data), BATCH):
+                        batch = train_data[i:i+BATCH]
+                        hist_embs, target_vecs, query_caps = [], [], []
+                        for hist, target in batch:
+                            h_embs = [item_emb_lookup[h_id] for h_id in hist]
+                            while len(h_embs) < 10:
+                                h_embs.insert(0, torch.zeros(128, device=self.device))
+                            hist_embs.append(torch.stack(h_embs))
+                            target_vecs.append(item_emb_lookup[target])
+                            pv_t = p_vectors[target]
+                            query_caps.append(torch.from_numpy(
+                                np.frombuffer(pv_t.caption_vector, dtype=np.float32).copy()
+                            ).to(self.device))
+
+                        loss = self.trainer.train_user_query_step(
+                            torch.stack(hist_embs),
+                            torch.stack(target_vecs),
+                            torch.stack(query_caps),
+                        )
+                        total_loss += loss
+                    if (epoch + 1) % 10 == 0:
+                        logger.info(f"  [Phase2] Epoch {epoch+1}/{PHASE2_EPOCHS} loss={total_loss:.4f}")
+
+                logger.info("✅ [Phase 2] User/Query Tower training complete.")
+            else:
+                logger.info("ℹ️ [Phase 2] Skipped (not enough likes data — search only mode)")
+
+            # ── 모델 저장 + Redis 동기화 ────────────────
             self.trainer.save_model(settings.MODEL_SAVE_PATH)
-            
-            # 학습 완료 즉시, DB에 남아있는 모든 진짜 포스트 벡터를 새로운 가중치로 재계산하여 Redis에 즉각 덮어씌웁니다 (Sync)
-            logger.info("🔄 [Sync] Backfilling all remaining posts to synchronize Redis vectors with newly trained weights...")
+            logger.info("🔄 [Sync] Backfilling Redis vectors with newly trained item tower...")
             await self.backfill_all_posts(db)
-            
-            logger.info(f"✅ Total Pipeline: {time.time()-total_start:.2f}s")
-            
+            logger.info(f"✅ Total Training Pipeline: {time.time()-total_start:.2f}s")
+
         except Exception as e:
             logger.error(f"❌ Training failure: {e}", exc_info=True)
 

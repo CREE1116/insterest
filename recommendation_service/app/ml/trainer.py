@@ -11,20 +11,43 @@ logger = logging.getLogger(__name__)
 
 class UnifiedDiscoveryTrainer:
     """
-    Advanced Trainer featuring Query Simulation and Multi-modal Alignment (CLIP-style)
+    Two-Phase Trainer:
+    - Phase 1: Item Tower self-supervised alignment (caption+hashtag → image)
+    - Phase 2: User/Query Tower trained on FROZEN item embeddings (InfoNCE)
     """
     def __init__(self, model: UnifiedDiscoveryModel, learning_rate=1e-4, device="cpu", temperature=0.05):
         self.model = model
         self.device = device
         self.model.to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
         self.temperature = temperature
         self.criterion = nn.CrossEntropyLoss()
 
+        # 아이템 타워 파라미터 (Phase 1에서만 업데이트)
+        self.item_tower_params = (
+            list(model.caption_proj.parameters()) +
+            list(model.hashtag_proj.parameters()) +
+            list(model.image_proj.parameters()) +
+            list(model.fusion_mlp.parameters())
+        )
+        # 유저/쿼리 타워 파라미터 (Phase 2에서만 업데이트)
+        self.user_query_params = (
+            list(model.user_tower.parameters()) +
+            list(model.query_proj.parameters())
+        )
+
+        self.item_optimizer = optim.Adam(self.item_tower_params, lr=learning_rate, weight_decay=1e-5)
+        self.user_query_optimizer = optim.Adam(self.user_query_params, lr=learning_rate, weight_decay=1e-5)
+
+    def _set_item_tower_grad(self, requires_grad: bool):
+        for p in self.item_tower_params:
+            p.requires_grad = requires_grad
+
+    def _set_user_query_grad(self, requires_grad: bool):
+        for p in self.user_query_params:
+            p.requires_grad = requires_grad
+
     def info_nce_loss(self, query_user_vecs: torch.Tensor, item_vecs: torch.Tensor):
-        """
-        InfoNCE Loss: Aligning the Discovery (Query+User) vector with the target Item
-        """
+        """InfoNCE Loss: query+user vector를 target item vector에 정렬"""
         logits = torch.matmul(query_user_vecs, item_vecs.T) / self.temperature
         batch_size = query_user_vecs.size(0)
         labels = torch.arange(batch_size, device=query_user_vecs.device)
@@ -32,118 +55,122 @@ class UnifiedDiscoveryTrainer:
 
     def similarity_preservation_loss(self, projected_vecs: torch.Tensor, raw_vecs: torch.Tensor):
         """
-        원본 공간(SBERT)의 유사도 구조를 128차원 공간에서도 유지하도록 함.
-        (Cat-Hedgehog 유사도 0.4가 0.97로 붕괴하는 것을 방지)
+        원본 SBERT 공간의 상대적 유사도 구조를 128차원에서도 보존.
+        (고양이-강아지 관계가 128차원에서도 유지됨)
         """
-        if projected_vecs.size(0) < 2: return torch.tensor(0.0).to(projected_vecs.device)
-        
-        # 1. 원본 공간 유사도 행렬 (Teacher)
+        if projected_vecs.size(0) < 2:
+            return torch.tensor(0.0, device=projected_vecs.device)
         raw_norm = F.normalize(raw_vecs, p=2, dim=-1)
         teacher_sim = torch.matmul(raw_norm, raw_norm.T)
-        
-        # 2. 투영 공간 유사도 행렬 (Student)
         student_sim = torch.matmul(projected_vecs, projected_vecs.T)
-        
-        # 3. MSE Loss between similarity matrices
         return F.mse_loss(student_sim, teacher_sim.detach())
 
-    def multimodal_alignment_loss(self, text_embs: torch.Tensor, image_embs: torch.Tensor):
+    # ──────────────────────────────────────────────────────────
+    # Phase 1: 아이템 타워 학습
+    # ──────────────────────────────────────────────────────────
+    def train_item_tower_step(
+        self,
+        caption_vecs: torch.Tensor,   # [B, 768] SBERT 원본
+        hashtag_vecs: torch.Tensor,   # [B, 768] SBERT 원본
+        image_vecs: torch.Tensor,     # [B, 512] 이미지 임베딩
+    ) -> float:
         """
-        Aligns image projections with text projections.
-        """
-        teacher_logits = torch.matmul(text_embs.detach(), text_embs.detach().T) / self.temperature
-        student_logits = torch.matmul(image_embs, text_embs.detach().T) / self.temperature
-        
-        teacher_probs = F.softmax(teacher_logits, dim=-1)
-        student_log_probs = F.log_softmax(student_logits, dim=-1)
-        
-        return F.kl_div(student_log_probs, teacher_probs, reduction='batchmean')
-
-    def train_discovery_step(self, user_histories: torch.Tensor, target_items: Dict[str, torch.Tensor], item_metadata_vecs: torch.Tensor):
-        """
-        Discovery Training Step with Multi-modal Item support and Query Masking
+        아이템 타워 자가 지도 학습:
+        1. 캡션+해시태그 = text anchor
+        2. 이미지를 text anchor 방향으로 정렬 (CLIP-style InfoNCE)
+        3. 캡션 투영 공간이 SBERT 의미 구조를 보존하도록 강제
+        4. query_proj도 caption_proj와 동일 공간을 갖도록 강제 (검색 일관성)
         """
         self.model.train()
-        self.optimizer.zero_grad()
-        
-        batch_size = user_histories.size(0)
-        
-        # 1. Project target items
-        target_item_vecs = self.model.get_item_embedding(
-            target_items.get("caption"), 
-            target_items.get("hashtag"), 
-            target_items.get("image")
-        )
-        
-        # 2. Extract User Vector
-        user_vecs = self.model.get_user_embedding(user_histories)
-        
-        # 3. Dynamic Query Masking
-        mask = torch.rand(batch_size, 1, device=user_histories.device) > 0.5
-        masked_query_raw = item_metadata_vecs * mask.float()
-        query_vecs = self.model.get_query_embedding(masked_query_raw)
-        
-        # 4. Discovery Fusion
-        discovery_vecs = self.model.discovery(query_vecs, user_vecs)
-        
-        # 5. Core Loss: InfoNCE
-        loss_discovery = self.info_nce_loss(discovery_vecs, target_item_vecs)
-        
-        # 6. Structural Loss: Similarity Preservation (공간 붕괴 방지 핵심)
-        # 캡션 투영 레이어가 원본 텍스트의 의미 구조를 깨지 않도록 함
-        projected_caps = F.normalize(self.model.caption_proj(target_items["caption"]), p=2, dim=-1)
-        loss_structure_c = self.similarity_preservation_loss(projected_caps, target_items["caption"])
-        
-        # 검색어 투영 레이어(query_proj)도 의미 구조가 깨지지 않도록 강제
-        projected_queries = F.normalize(self.model.query_proj(target_items["caption"]), p=2, dim=-1)
-        loss_structure_q = self.similarity_preservation_loss(projected_queries, target_items["caption"])
-        
-        # 6-2. 좌표계 동기화 (Coordinate Alignment)
-        # 동일한 SBERT 텍스트에 대해 query_proj와 caption_proj가 완벽히 일치하는 좌표계를 갖도록 강제
-        loss_coordinate_align = F.mse_loss(projected_queries, projected_caps)
-        
-        loss_structure = loss_structure_c + loss_structure_q + 2.0 * loss_coordinate_align
-        
-        # 7. Alignment Loss: Multi-modal (Text-Image)
-        with torch.set_grad_enabled(True):
-            c_emb = F.normalize(self.model.caption_proj(target_items["caption"]), p=2, dim=-1)
-            i_emb = F.normalize(self.model.image_proj(target_items["image"]), p=2, dim=-1)
-            loss_alignment = self.multimodal_alignment_loss(c_emb, i_emb)
-            
-        # 8. Direct Query-Item & Query-Image Alignment (순수 벡터 검색 정확도 향상용)
-        # 마스킹되지 않은 진짜 Query가 있을 때만 해당 Loss 추가
-        valid_query_mask = mask.squeeze(-1)
-        if valid_query_mask.sum() > 0:
-            valid_query_vecs = query_vecs[valid_query_mask]
-            # 8-1. 순수 검색어와 최종 타겟 아이템 벡터의 직접 일치
-            valid_target_vecs = target_item_vecs[valid_query_mask]
-            loss_query_item = self.info_nce_loss(valid_query_vecs, valid_target_vecs)
-            
-            # 8-2. 순수 검색어와 이미지 벡터 간의 멀티모달 직접 일치 
-            # 텍스트가 "절대 기준(Anchor)"이 되도록 valid_query_vecs를 detach()하여 
-            # 이미지가 텍스트 공간으로 끌려오도록(정렬되도록) 강제합니다.
-            valid_image_embs = i_emb[valid_query_mask]
-            loss_query_image = self.info_nce_loss(valid_query_vecs.detach(), valid_image_embs)
+        # Phase 1: 아이템 타워 + query_proj 업데이트, user_tower 동결
+        self._set_item_tower_grad(True)
+        self._set_user_query_grad(False)
+        # query_proj는 Phase 1에서도 같이 정렬
+        for p in self.model.query_proj.parameters():
+            p.requires_grad = True
+
+        self.item_optimizer.zero_grad()
+
+        # --- 텍스트 앵커: 캡션과 해시태그의 평균 ---
+        c_emb = F.normalize(self.model.caption_proj(caption_vecs), p=2, dim=-1)
+        h_emb = F.normalize(self.model.hashtag_proj(hashtag_vecs), p=2, dim=-1)
+        text_anchor = F.normalize(c_emb + h_emb, p=2, dim=-1)  # [B, 128]
+
+        # --- 이미지 투영 ---
+        i_emb = F.normalize(self.model.image_proj(image_vecs), p=2, dim=-1)  # [B, 128]
+
+        # Loss 1: 이미지 → 텍스트 앵커 정렬 (CLIP-style InfoNCE)
+        # 텍스트가 anchor(고정), 이미지가 텍스트 공간으로 끌려오도록
+        if text_anchor.size(0) > 1:
+            logits_i2t = torch.matmul(i_emb, text_anchor.detach().T) / self.temperature
+            logits_t2i = torch.matmul(text_anchor, i_emb.detach().T) / self.temperature
+            labels = torch.arange(text_anchor.size(0), device=self.device)
+            loss_clip = (self.criterion(logits_i2t, labels) + self.criterion(logits_t2i, labels)) / 2.0
         else:
-            loss_query_item = torch.tensor(0.0).to(user_histories.device)
-            loss_query_image = torch.tensor(0.0).to(user_histories.device)
-        
-        # Total Loss (텍스트를 Anchor로 삼아 이미지를 강력하게 정렬)
-        total_loss = loss_discovery + 1.0 * loss_structure + 2.0 * loss_alignment + 1.0 * loss_query_item + 2.0 * loss_query_image
-        
+            loss_clip = torch.tensor(0.0, device=self.device)
+
+        # Loss 2: 캡션 투영 공간이 SBERT 의미 구조를 보존 (고양이≈강아지 관계 유지)
+        loss_struct_c = self.similarity_preservation_loss(c_emb, caption_vecs)
+
+        # Loss 3: query_proj도 caption_proj와 동일 공간 강제
+        # → "고양이" 검색 시 query_proj(고양이) ≈ caption_proj(고양이 caption)
+        q_emb = F.normalize(self.model.query_proj(caption_vecs), p=2, dim=-1)
+        loss_struct_q = self.similarity_preservation_loss(q_emb, caption_vecs)
+        loss_q_c_align = F.mse_loss(q_emb, c_emb.detach())  # query 공간 = caption 공간
+
+        total_loss = loss_clip + loss_struct_c + loss_struct_q + 2.0 * loss_q_c_align
         total_loss.backward()
-        self.optimizer.step()
-        
+        self.item_optimizer.step()
         return total_loss.item()
+
+    # ──────────────────────────────────────────────────────────
+    # Phase 2: 유저/쿼리 타워 학습 (아이템 타워 완전 동결)
+    # ──────────────────────────────────────────────────────────
+    def train_user_query_step(
+        self,
+        user_histories: torch.Tensor,         # [B, 10, 128] 사전 계산된 아이템 임베딩 (동결)
+        target_item_vecs: torch.Tensor,        # [B, 128] 사전 계산된 타겟 아이템 임베딩 (동결)
+        caption_vecs_for_query: torch.Tensor,  # [B, 768] SBERT 원본 (query masking용)
+    ) -> float:
+        """
+        유저/쿼리 타워 학습:
+        - 아이템 타워는 완전 동결 (frozen item embeddings으로 안정적 학습)
+        - UserTower + query_proj만 업데이트
+        """
+        self.model.train()
+        self._set_item_tower_grad(False)  # 아이템 타워 완전 동결
+        self._set_user_query_grad(True)
+
+        self.user_query_optimizer.zero_grad()
+
+        batch_size = user_histories.size(0)
+
+        # --- 유저 벡터 추출 ---
+        user_vecs = self.model.get_user_embedding(user_histories)
+
+        # --- 쿼리 마스킹: 50% 확률로 쿼리를 비워 유저 벡터만으로도 추천 가능하게 ---
+        mask = torch.rand(batch_size, 1, device=self.device) > 0.5
+        masked_query_raw = caption_vecs_for_query * mask.float()
+        query_vecs = self.model.get_query_embedding(masked_query_raw)
+
+        # --- Discovery Fusion ---
+        discovery_vecs = self.model.discovery(query_vecs, user_vecs)
+
+        # --- InfoNCE Loss: discovery vec → target item vec ---
+        loss = self.info_nce_loss(discovery_vecs, target_item_vecs)
+
+        loss.backward()
+        self.user_query_optimizer.step()
+        return loss.item()
 
     def save_model(self, path: str):
         import os
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             torch.save(self.model.state_dict(), path)
-            logger.info(f"💾 Discovery Model saved to {path}")
+            logger.info(f"💾 Model saved to {path}")
         except Exception as e:
-            logger.error(f"❌ Failed to save model to {path}: {e}")
+            logger.error(f"❌ Failed to save model: {e}")
 
     def load_model(self, path: str):
         import os
@@ -152,6 +179,6 @@ class UnifiedDiscoveryTrainer:
             return
         try:
             self.model.load_state_dict(torch.load(path, map_location=self.device))
-            logger.info(f"✅ Discovery Model loaded from {path}")
+            logger.info(f"✅ Model loaded from {path}")
         except Exception as e:
-            logger.warning(f"Could not load discovery model from {path}: {e}")
+            logger.warning(f"Could not load model from {path}: {e}")
