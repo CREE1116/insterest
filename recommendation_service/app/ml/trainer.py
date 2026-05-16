@@ -13,10 +13,11 @@ class UnifiedDiscoveryTrainer:
     """
     Advanced Trainer featuring Query Simulation and Multi-modal Alignment (CLIP-style)
     """
-    def __init__(self, model: UnifiedDiscoveryModel, lr=1e-4, temperature=0.05): # 온도를 0.05로 낮춤 (Harder Matching)
+    def __init__(self, model: UnifiedDiscoveryModel, learning_rate=1e-4, device="cpu", temperature=0.05):
         self.model = model
-        # weight_decay 추가로 공간 붕괴 방지
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-5)
+        self.device = device
+        self.model.to(self.device)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
         self.temperature = temperature
         self.criterion = nn.CrossEntropyLoss()
 

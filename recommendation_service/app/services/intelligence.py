@@ -5,6 +5,7 @@ import logging
 import httpx
 import uuid
 import asyncio
+import random
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,13 +25,14 @@ class UnifiedIntelligenceService:
     Orchestrates Search, Recommendation, and Continuous Learning (128-dim Projection)
     """
     def __init__(self):
-        # Load Model
-        self.model = UnifiedDiscoveryModel()
-        self.trainer = UnifiedDiscoveryTrainer(self.model)
-        
         # CPU/GPU Device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Load Model
+        self.model = UnifiedDiscoveryModel()
         self.model.to(self.device)
+        self.trainer = UnifiedDiscoveryTrainer(self.model, device=self.device)
+        self.trainer.device = self.device
         
         # Load weights if exist
         self.trainer.load_model(settings.MODEL_SAVE_PATH)
