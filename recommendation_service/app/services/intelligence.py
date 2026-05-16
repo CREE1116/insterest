@@ -220,10 +220,10 @@ class UnifiedIntelligenceService:
                         h_embs = []
                         for h_id in hist:
                             pv = p_vectors[h_id]
-                            # 아이템의 융합 벡터 추출 (detach하여 아이템 타워는 보존)
-                            c = torch.from_numpy(np.frombuffer(pv.caption_vector, dtype=np.float32)).to(self.device)
-                            t = torch.from_numpy(np.frombuffer(pv.hashtag_vector, dtype=np.float32)).to(self.device)
-                            img = torch.from_numpy(np.frombuffer(pv.image_vector, dtype=np.float32)).to(self.device)
+                            # 아이템의 융합 벡터 추출 (copy()를 추가하여 writable 에러 방지)
+                            c = torch.from_numpy(np.frombuffer(pv.caption_vector, dtype=np.float32).copy()).to(self.device)
+                            t = torch.from_numpy(np.frombuffer(pv.hashtag_vector, dtype=np.float32).copy()).to(self.device)
+                            img = torch.from_numpy(np.frombuffer(pv.image_vector, dtype=np.float32).copy()).to(self.device)
                             with torch.no_grad():
                                 h_embs.append(self.model.get_item_embedding(c.unsqueeze(0), t.unsqueeze(0), img.unsqueeze(0)).squeeze(0))
                         
@@ -234,9 +234,9 @@ class UnifiedIntelligenceService:
                         
                         # 타겟 메타데이터
                         pv_t = p_vectors[target]
-                        target_caps.append(torch.from_numpy(np.frombuffer(pv_t.caption_vector, dtype=np.float32)).to(self.device))
-                        target_tags.append(torch.from_numpy(np.frombuffer(pv_t.hashtag_vector, dtype=np.float32)).to(self.device))
-                        target_imgs.append(torch.from_numpy(np.frombuffer(pv_t.image_vector, dtype=np.float32)).to(self.device))
+                        target_caps.append(torch.from_numpy(np.frombuffer(pv_t.caption_vector, dtype=np.float32).copy()).to(self.device))
+                        target_tags.append(torch.from_numpy(np.frombuffer(pv_t.hashtag_vector, dtype=np.float32).copy()).to(self.device))
+                        target_imgs.append(torch.from_numpy(np.frombuffer(pv_t.image_vector, dtype=np.float32).copy()).to(self.device))
                     
                     # 텐서 변환 및 학습
                     u_hist = torch.stack(hist_embs)
