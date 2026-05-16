@@ -98,11 +98,17 @@ jobs:
         run: |
           cd infra
           
+          # Get the list of changed services as a JSON array from paths-filter
+          CHANGES='${{ steps.filter.outputs.changes }}'
+          echo "Changes detected: $CHANGES"
+          
           SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend")
           
           for service in "${SERVICES[@]}"; do
-            # Only update if the service changed or it's a manual forced run
-            if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "${{ steps.filter.outputs[service] }}" == "true" ]]; then
+            # Check if service is in the CHANGES array or if it's a manual run
+            IS_CHANGED=$(echo "$CHANGES" | jq -r ".[] | select(. == \"$service\")")
+            
+            if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ -n "$IS_CHANGED" ]]; then
               echo "Updating tag for $service..."
               find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: .*/?$service:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
             else
