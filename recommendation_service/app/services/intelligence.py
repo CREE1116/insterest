@@ -212,7 +212,7 @@ class UnifiedIntelligenceService:
 
             # 4. 학습 루프
             t2 = time.time()
-            epochs = 5
+            epochs = 50
             batch_size = 32
             
             for epoch in range(epochs):
