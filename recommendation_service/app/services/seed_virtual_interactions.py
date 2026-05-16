@@ -10,7 +10,11 @@ PERSONAS = {
     "CatLover": ["고양이", "강아지", "반려동물", "아기"],
     "CityWalker": ["도시", "야경", "네온사인", "서울", "스카이라인"],
     "CafeTraveler": ["카페", "커피", "여행", "바다", "휴가", "홈카페"],
-    "Foodie": ["음식", "떡볶이", "먹스타그램", "맛있는", "점심"]
+    "Foodie": ["음식", "떡볶이", "먹스타그램", "맛있는", "점심"],
+    "Architect": ["건축", "인테리어", "디자인", "거실", "스카이라인"],
+    "Fashionista": ["패션", "런웨이", "모델", "트렌드", "빈티지"],
+    "Athlete": ["운동", "마라톤", "자기관리", "등산", "폭포"],
+    "TechGeek": ["코딩", "개발자", "모니터", "코드", "열정", "디자인"]
 }
 
 async def seed_interactions():
@@ -42,9 +46,14 @@ async def seed_interactions():
                 # 매칭되는 게 없으면 랜덤으로 몇 개 선택
                 matched_posts = [p.post_id for p in random.sample(posts, min(5, len(posts)))]
             
-            # 유저당 약 10~15개의 좋아요 생성
-            sample_size = min(len(set(matched_posts)), random.randint(10, 15))
-            target_posts = random.sample(list(set(matched_posts)), sample_size)
+            # 유저당 최소 5개, 최대 15개의 좋아요 생성
+            sample_size = min(len(set(matched_posts)), random.randint(5, 15))
+            if sample_size < 5 and len(posts) >= 5:
+                # 데이터가 너무 적으면 전체 포스트에서 랜덤으로 채움
+                extra_posts = [p.post_id for p in random.sample(posts, 5 - sample_size)]
+                target_posts = list(set(matched_posts)) + extra_posts
+            else:
+                target_posts = random.sample(list(set(matched_posts)), sample_size)
             
             for post_id in target_posts:
                 try:
