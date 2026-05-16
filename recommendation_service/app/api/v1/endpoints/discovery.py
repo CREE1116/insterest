@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.session import get_db
+from app.db.session import get_db, AsyncSessionLocal
 from app.services.intelligence import intel_service
 from typing import List, Optional
 import uuid
@@ -69,10 +69,15 @@ async def get_discovery_metrics(
 
 @router.post("/train")
 async def trigger_training(
-    db: AsyncSession = Depends(get_db)
+    background_tasks: BackgroundTasks
 ):
     """
-    Trigger manual model training asynchronously
+    Trigger manual model training.
+    독립적인 DB 세션을 생성하여 HTTP 요청 세션과 수명주기를 분리합니다.
     """
-    await intel_service.train_daily_async(db)
+    async def run_training():
+        async with AsyncSessionLocal() as session:
+            await intel_service.train_discovery(session)
+
+    background_tasks.add_task(run_training)
     return {"status": "training_started"}
