@@ -93,7 +93,7 @@ class UnifiedIntelligenceService:
                 logger.error(f"Failed to fetch user context for {user_id}: {e}")
                 return None
 
-    async def discover(self, db: AsyncSession, user_id: Optional[uuid.UUID] = None, query_text: Optional[str] = None, skip: int = 0, limit: int = 20, query_weight: float = 0.7, use_personalization: bool = True, exclude_history_ids: Optional[List[uuid.UUID]] = None) -> List[uuid.UUID]:
+    async def discover(self, db: AsyncSession, user_id: Optional[uuid.UUID] = None, query_text: Optional[str] = None, skip: int = 0, limit: int = 20, query_weight: float = 0.7, use_personalization: bool = True, exclude_history_ids: Optional[List[uuid.UUID]] = None) -> List[Dict[str, Any]]:
         """
         하이브리드 탐색: 텍스트 매칭(우선) + 벡터 검색을 결합하여 품질을 극대화합니다.
         """
@@ -303,11 +303,11 @@ class UnifiedIntelligenceService:
                 for k in k_list:
                     top_k = reco_ids[:k]
                     # Recall
-                    hit = 1.0 if target_id in top_k else 0.0
+                    hit = 1.0 if str(target_id) in top_k else 0.0
                     metrics[k]["recall"].append(hit)
                     # NDCG
-                    if target_id in top_k:
-                        rank = top_k.index(target_id) + 1
+                    if str(target_id) in top_k:
+                        rank = top_k.index(str(target_id)) + 1
                         metrics[k]["ndcg"].append(1.0 / np.log2(rank + 1))
                     else:
                         metrics[k]["ndcg"].append(0.0)

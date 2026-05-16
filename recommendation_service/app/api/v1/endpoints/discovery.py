@@ -55,6 +55,18 @@ async def sync_index(
     await intel_service.backfill_all_posts(db)
     return {"status": "sync_completed"}
 
+@router.get("/metrics")
+async def get_discovery_metrics(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    정량적 성능 지표(NDCG, Recall)를 측정하여 반환합니다. (Postman 확인용)
+    """
+    metrics = await intel_service.evaluate_offline(db)
+    if not metrics:
+        return {"message": "No data available for evaluation"}
+    return metrics
+
 @router.post("/train")
 async def trigger_training(
     db: AsyncSession = Depends(get_db)
