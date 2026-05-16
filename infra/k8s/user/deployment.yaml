@@ -37,7 +37,7 @@ spec:
     spec:
       containers:
       - name: user-app
-        image: user-service:v20
+        image: cree1116/user-service:v20
         imagePullPolicy: Always
         ports:
         - containerPort: 8006

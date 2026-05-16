@@ -26,7 +26,7 @@ spec:
     spec:
       containers:
       - name: auth-app
-        image: auth-service:v7
+        image: cree1116/auth-service:v7
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

@@ -34,7 +34,7 @@ spec:
     spec:
       containers:
       - name: generation-service
-        image: generation-service:v6
+        image: cree1116/generation-service:v6
         imagePullPolicy: Always
         resources:
           requests:
