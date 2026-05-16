@@ -59,10 +59,10 @@ class UnifiedDiscoveryModel(nn.Module):
     def __init__(self):
         super(UnifiedDiscoveryModel, self).__init__()
         
-        self.caption_proj = MLPProjection(768, 128)
+        # 검색어와 아이템 캡션이 동일한 레이어를 공유 → 항상 같은 공간 보장
+        self.text_proj = MLPProjection(768, 128)
         self.hashtag_proj = MLPProjection(768, 128)
         self.image_proj = MLPProjection(512, 128)
-        self.query_proj = MLPProjection(768, 128)
         
         # Fusion MLP (384 -> 128)
         self.fusion_mlp = nn.Sequential(
@@ -76,31 +76,22 @@ class UnifiedDiscoveryModel(nn.Module):
 
     def get_multimodal_item_embedding(self, caption_vec, hashtag_vec, image_vec):
         """
-        Modality Normalization: 0 벡터는 투영하지 않고 0으로 유지하여 노이즈 방지
+        캡션은 text_proj (쿼리와 동일 레이어) 사용 → 검색어-아이템 공간 일치 보장
         """
         def safe_proj(proj_layer, vec):
-            # 벡터가 0이면 결과도 0, 아니면 투영 후 L2 Normalize
             mask = (torch.norm(vec, dim=-1, keepdim=True) > 1e-6).float()
             projected = proj_layer(vec)
-            # mask를 곱해 bias와 LayerNorm 효과를 0으로 만듦
             return F.normalize(projected * mask, p=2, dim=-1) * mask
 
-        c_emb = safe_proj(self.caption_proj, caption_vec)
+        c_emb = safe_proj(self.text_proj, caption_vec)    # 쿼리와 같은 레이어!
         h_emb = safe_proj(self.hashtag_proj, hashtag_vec)
         i_emb = safe_proj(self.image_proj, image_vec)
         
-        # Scale-normalized Concat
         combined = torch.cat([c_emb, h_emb, i_emb], dim=-1)
-        
-        # LayerNorm(128)을 통과한 fused는 벡터 크기(Norm)가 약 11.3으로 매우 커집니다.
-        # 반면 c_emb는 L2 정규화되어 크기가 딱 1.0입니다.
-        # 이대로 더하면 텍스트 정체성이 10배 이상 압도당하므로, fused도 크기를 1로 맞춰줍니다.
         fused = F.normalize(self.fusion_mlp(combined), p=2, dim=-1)
         
-        # 텍스트 정체성(50%)과 멀티모달 문맥(50%)을 1:1로 결합
-        final_emb = 0.5 * fused + 0.5 * c_emb 
-        
-        # ANN 품질을 위해 최종 L2 Normalize
+        # 텍스트 정체성(50%) + 멀티모달 문맥(50%)
+        final_emb = 0.5 * fused + 0.5 * c_emb
         return F.normalize(final_emb, p=2, dim=-1)
 
     def get_item_embedding(self, caption_vec, hashtag_vec=None, image_vec=None):
@@ -111,11 +102,8 @@ class UnifiedDiscoveryModel(nn.Module):
         return self.get_multimodal_item_embedding(caption_vec, hashtag_vec, image_vec)
 
     def get_query_embedding(self, raw_query_vec):
-        """
-        검색어는 전용 투영 레이어(query_proj)를 거쳐 128차원으로 변환됩니다.
-        """
-        projected = self.query_proj(raw_query_vec)
-        return F.normalize(projected, p=2, dim=-1)
+        """검색어는 text_proj를 거쳐 128차원으로 변환 (캡션과 동일 레이어)"""
+        return F.normalize(self.text_proj(raw_query_vec), p=2, dim=-1)
 
     def get_user_embedding(self, history_vecs):
         return self.user_tower(history_vecs)

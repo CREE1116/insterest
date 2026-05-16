@@ -24,16 +24,14 @@ class UnifiedDiscoveryTrainer:
 
         # 아이템 타워 파라미터 (Phase 1에서만 업데이트)
         self.item_tower_params = (
-            list(model.caption_proj.parameters()) +
+            list(model.text_proj.parameters()) +
             list(model.hashtag_proj.parameters()) +
             list(model.image_proj.parameters()) +
             list(model.fusion_mlp.parameters())
         )
-        # 유저/쿼리 타워 파라미터 (Phase 2에서만 업데이트)
-        self.user_query_params = (
-            list(model.user_tower.parameters()) +
-            list(model.query_proj.parameters())
-        )
+        # 유저 타워 파라미터 (Phase 2에서만 업데이트)
+        # text_proj는 Phase 1에서 이미 학습됨 → Phase 2에서는 user_tower만 업데이트
+        self.user_query_params = list(model.user_tower.parameters())
 
         self.item_optimizer = optim.Adam(self.item_tower_params, lr=learning_rate, weight_decay=1e-5)
         self.user_query_optimizer = optim.Adam(self.user_query_params, lr=learning_rate, weight_decay=1e-5)
@@ -103,7 +101,6 @@ class UnifiedDiscoveryTrainer:
         i_emb = F.normalize(self.model.image_proj(image_vecs), p=2, dim=-1)  # [B, 128]
 
         # Loss 1: 이미지 → 텍스트 앵커 정렬 (CLIP-style InfoNCE)
-        # 텍스트가 anchor(고정), 이미지가 텍스트 공간으로 끌려오도록
         if text_anchor.size(0) > 1:
             logits_i2t = torch.matmul(i_emb, text_anchor.detach().T) / self.temperature
             logits_t2i = torch.matmul(text_anchor, i_emb.detach().T) / self.temperature
@@ -112,16 +109,11 @@ class UnifiedDiscoveryTrainer:
         else:
             loss_clip = torch.tensor(0.0, device=self.device)
 
-        # Loss 2: 캡션 투영 공간이 SBERT 의미 구조를 보존 (고양이≈강아지 관계 유지)
-        loss_struct_c = self.similarity_preservation_loss(c_emb, caption_vecs)
+        # Loss 2: text_proj 공간이 SBERT 의미 구조를 보존 (고양이≈강아지 상대 거리 유지)
+        # query와 caption이 같은 레이어를 쓰므로 한 번만 적용하면 됨
+        loss_struct = self.similarity_preservation_loss(c_emb, caption_vecs)
 
-        # Loss 3: query_proj도 caption_proj와 동일 공간 강제
-        # → "고양이" 검색 시 query_proj(고양이) ≈ caption_proj(고양이 caption)
-        q_emb = F.normalize(self.model.query_proj(caption_vecs), p=2, dim=-1)
-        loss_struct_q = self.similarity_preservation_loss(q_emb, caption_vecs)
-        loss_q_c_align = F.mse_loss(q_emb, c_emb.detach())  # query 공간 = caption 공간
-
-        total_loss = loss_clip + loss_struct_c + loss_struct_q + 0.5 * loss_q_c_align
+        total_loss = loss_clip + loss_struct
         total_loss.backward()
         self.item_optimizer.step()
         return total_loss.item()
@@ -181,7 +173,7 @@ class UnifiedDiscoveryTrainer:
             logger.warning(f"⚠️ Model file not found at {path}, skipping load.")
             return
         try:
-            self.model.load_state_dict(torch.load(path, map_location=self.device))
+            self.model.load_state_dict(torch.load(path, map_location=self.device), strict=False)
             logger.info(f"✅ Model loaded from {path}")
         except Exception as e:
             logger.warning(f"Could not load model from {path}: {e}")
