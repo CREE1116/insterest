@@ -285,6 +285,5 @@ class UnifiedIntelligenceService:
             logger.error(f"❌ Evaluation error: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
 
-    # ... 나머지 메서드들은 생략하지 않고 모두 포함하여 다시 씁니다.
 
 intel_service = UnifiedIntelligenceService()
