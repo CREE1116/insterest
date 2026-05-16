@@ -77,19 +77,25 @@ class UnifiedIntelligenceService:
                             u_hist = torch.stack(hist_embs).unsqueeze(0)
                             user_vec = self.model.get_user_embedding(u_hist).squeeze(0).cpu().numpy()
 
-            # 3. Discovery Fusion → Redis ANN 검색
-            if query_vec_128 is not None or user_vec is not None:
+            # 3. 검색 vs 추천 분리
+            if query_vec_128 is not None and user_vec is None:
+                # ── 순수 검색: 퓨전 없이 쿼리 벡터 그대로 ANN 검색 ──
+                search_vec = query_vec_128
+
+            elif query_vec_128 is not None or user_vec is not None:
+                # ── 개인화 추천 (or 검색+추천 혼합): Discovery Fusion ──
                 with torch.no_grad():
                     q_t = torch.from_numpy(query_vec_128).to(self.device) if query_vec_128 is not None \
-                          else self.model.get_query_embedding(torch.zeros(1, 768, device=self.device)).squeeze(0)
+                          else torch.zeros(128, device=self.device)
                     u_t = torch.from_numpy(user_vec).to(self.device) if user_vec is not None \
                           else torch.zeros(128, device=self.device)
-                    fusion_vec = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0).cpu().numpy()
+                    search_vec = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0).cpu().numpy()
+            else:
+                search_vec = None
 
-                # Redis HNSW ANN 검색 (미리 저장된 128차원 벡터 사용)
-                result_ids = vector_store.search_knn(fusion_vec, k=limit + len(exclude_history_ids or []) + skip)
-
-                # 이미 본 포스트 제외 후 페이지네이션
+            if search_vec is not None:
+                # Redis HNSW ANN 검색
+                result_ids = vector_store.search_knn(search_vec, k=limit + len(exclude_history_ids or []) + skip)
                 exclude_set = set(str(i) for i in (exclude_history_ids or []))
                 filtered = [str(pid) for pid in result_ids if str(pid) not in exclude_set]
                 page = filtered[skip: skip + limit]
