@@ -74,11 +74,11 @@ spec:
           failureThreshold: 15
         resources:
           limits:
-            memory: "6Gi"
-            cpu: "2.0"
-          requests:
-            memory: "4Gi"
+            memory: "2Gi"
             cpu: "1.0"
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
         volumeMounts:
         - name: model-storage
           mountPath: /app/models
