@@ -15,6 +15,7 @@ metadata:
   name: auth-app
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: auth-app

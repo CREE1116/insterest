@@ -15,6 +15,7 @@ metadata:
   name: interaction-service
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: interaction-service

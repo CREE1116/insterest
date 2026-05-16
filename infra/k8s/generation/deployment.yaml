@@ -23,6 +23,7 @@ metadata:
   name: generation-service
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: generation-service

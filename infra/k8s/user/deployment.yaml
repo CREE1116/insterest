@@ -26,6 +26,7 @@ metadata:
   name: user-app
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: user-app

@@ -25,7 +25,7 @@ data:
         updated_at TIMESTAMP WITH TIME ZONE
     );
 
-    -- Interaction Schema (기초 테이블들)
+    -- Interaction Schema
     CREATE TABLE IF NOT EXISTS interaction.likes (
         user_id UUID NOT NULL,
         post_id UUID NOT NULL,
@@ -67,13 +67,13 @@ data:
         is_deleted BOOLEAN DEFAULT FALSE
     );
 
-    -- Search Schema (추천/검색용 벡터 테이블 - 멀티모달 최적화)
+    -- Search Schema
     CREATE TABLE IF NOT EXISTS search.post_vectors (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         post_id UUID UNIQUE NOT NULL,
-        caption_vector BYTEA NOT NULL,  -- 768-dim (SBERT)
-        hashtag_vector BYTEA,           -- 768-dim (SBERT)
-        image_vector BYTEA,             -- 512-dim (CLIP)
+        caption_vector BYTEA NOT NULL,
+        hashtag_vector BYTEA,
+        image_vector BYTEA,
         content_text JSONB,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE
@@ -90,12 +90,16 @@ spec:
       targetPort: 5432
   selector:
     app: postgres
+  clusterIP: None # Headless service for StatefulSet
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: postgres
 spec:
+  serviceName: "postgres-service"
+  replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: postgres
@@ -108,13 +112,14 @@ spec:
       - name: postgres
         image: postgres:16-alpine
         imagePullPolicy: IfNotPresent
+        args: ["-c", "max_connections=500", "-c", "shared_buffers=512MB"]
         resources:
           requests:
-            cpu: "250m"
-            memory: "512Mi"
+            cpu: "500m"
+            memory: "1Gi"
           limits:
-            cpu: "1000m"
-            memory: "1024Mi"
+            cpu: "2000m"
+            memory: "2Gi"
         env:
         - name: POSTGRES_USER
           value: "postgres"
@@ -122,12 +127,24 @@ spec:
           value: "postgres"
         - name: POSTGRES_DB
           value: "auth_db"
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
         ports:
         - containerPort: 5432
         volumeMounts:
         - name: init-script
           mountPath: /docker-entrypoint-initdb.d/
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
       volumes:
       - name: init-script
         configMap:
           name: postgres-init-script
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi

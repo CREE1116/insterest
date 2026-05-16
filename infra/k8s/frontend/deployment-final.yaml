@@ -4,6 +4,7 @@ metadata:
   name: feed-test-frontend
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app: feed-test-frontend
