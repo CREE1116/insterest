@@ -80,6 +80,54 @@ class UnifiedIntelligenceService:
             logger.error(f"❌ Error in discovery: {e}", exc_info=True)
             return []
 
+    async def index_post(self, db: AsyncSession, post_id: uuid.UUID, 
+                         caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray,
+                         metadata: Dict[str, Any]):
+        """
+        포스트 벡터를 DB와 Redis에 동시 인덱싱합니다.
+        """
+        try:
+            from app.ml.vector_store import vector_store
+            
+            # 1. DB (PostgreSQL) 저장
+            pv = PostVector(
+                post_id=post_id,
+                caption_vector=caption_vec.tobytes(),
+                hashtag_vector=hashtag_vec.tobytes(),
+                image_vector=image_vec.tobytes(),
+                content_text=metadata
+            )
+            db.add(pv)
+            await db.commit()
+            
+            # 2. Redis Vector Store 저장 (실시간 검색용)
+            # 텍스트 벡터를 기본 인덱스로 사용
+            vector_store.upsert_vector(str(post_id), caption_vec, metadata)
+            
+        except Exception as e:
+            logger.error(f"❌ Indexing failed for {post_id}: {e}")
+
+    async def backfill_all_posts(self, db: AsyncSession):
+        """
+        DB의 모든 포스트를 Redis Vector Store에 재동기화합니다.
+        """
+        try:
+            from app.ml.vector_store import vector_store
+            res = await db.execute(select(PostVector))
+            posts = res.scalars().all()
+            for p in posts:
+                vec = np.frombuffer(p.caption_vector, dtype=np.float32)
+                vector_store.upsert_vector(str(p.post_id), vec, p.content_text)
+            logger.info(f"✅ Backfilled {len(posts)} posts to Redis.")
+        except Exception as e:
+            logger.error(f"❌ Backfill failed: {e}")
+
+    async def train_daily_async(self, db: AsyncSession):
+        """
+        비동기적으로 일일 학습 태스크를 실행합니다.
+        """
+        asyncio.create_task(self.train_discovery(db))
+
     async def train_discovery(self, db: AsyncSession):
         """
         성능 최적화 버전: 에폭당 1회 사전 계산 + 메모리 관리
