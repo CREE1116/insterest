@@ -314,16 +314,43 @@ class UnifiedIntelligenceService:
             except Exception as e:
                 logger.error(f"Benchmark error: {e}")
 
-        # 최종 평균 계산
-        final_metrics = {}
-        for k in k_list:
-            final_metrics[f"Recall@{k}"] = float(np.mean(metrics[k]["recall"])) if metrics[k]["recall"] else 0.0
-            final_metrics[f"NDCG@{k}"] = float(np.mean(metrics[k]["ndcg"])) if metrics[k]["ndcg"] else 0.0
+        # 4. Self-Retrieval Fidelity (Search Accuracy)
+        # 캡션을 검색어로 던졌을 때 본인이 나오는지 측정
+        search_metrics = {k: {"recall": [], "ndcg": []} for k in k_list}
+        test_posts = await db.execute(select(PostVector).limit(50))
+        for post in test_posts.scalars().all():
+            try:
+                caption = post.content_text.get("caption", "")
+                if not caption: continue
+                
+                # 캡션으로 검색 요청 (개인화 제외)
+                results = await self.discover(db, query_text=caption, limit=50, use_personalization=False)
+                
+                for k in k_list:
+                    top_k = [r["id"] for r in results[:k]]
+                    hit = 1.0 if str(post.post_id) in top_k else 0.0
+                    search_metrics[k]["recall"].append(hit)
+                    if str(post.post_id) in top_k:
+                        rank = top_k.index(str(post.post_id)) + 1
+                        search_metrics[k]["ndcg"].append(1.0 / np.log2(rank + 1))
+                    else:
+                        search_metrics[k]["ndcg"].append(0.0)
+            except: continue
 
+        # 최종 평균 계산
+        final_summary = {
+            "recommendation_quality": {},
+            "search_fidelity": {}
+        }
+        for k in k_list:
+            final_summary["recommendation_quality"][f"NDCG@{k}"] = float(np.mean(metrics[k]["ndcg"])) if metrics[k]["ndcg"] else 0.0
+            final_summary["search_fidelity"][f"NDCG@{k}"] = float(np.mean(search_metrics[k]["ndcg"])) if search_metrics[k]["ndcg"] else 0.0
+            
         return {
             "status": "success",
-            "sample_size": len(test_users),
-            "metrics": final_metrics
+            "sample_size_users": len(test_users),
+            "sample_size_search": len(search_metrics[k_list[0]]["ndcg"]),
+            "metrics": final_summary
         }
 
 intel_service = UnifiedIntelligenceService()
