@@ -1,3 +1,26 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: recommendation-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation-service
+spec:
+  selector:
+    app: recommendation-service
+  ports:
+  - protocol: TCP
+    port: 8008
+    targetPort: 8008
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,6 +63,8 @@ spec:
           value: "http://interaction-service:8004"
         - name: COMMENT_SERVICE_URL
           value: "http://comment-service:8005"
+        - name: MODEL_SAVE_PATH
+          value: "/app/models/discovery_engine.pth"
         readinessProbe:
           httpGet:
             path: /health
@@ -54,15 +79,10 @@ spec:
           requests:
             memory: "4Gi"
             cpu: "1.0"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: recommendation-service
-spec:
-  selector:
-    app: recommendation-service
-  ports:
-  - protocol: TCP
-    port: 8008
-    targetPort: 8008
+        volumeMounts:
+        - name: model-storage
+          mountPath: /app/models
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: recommendation-pvc

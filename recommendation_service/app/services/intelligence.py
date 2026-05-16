@@ -31,7 +31,7 @@ class UnifiedIntelligenceService:
         self.model.to(self.device)
         
         # Load weights if exist
-        self.trainer.load_model()
+        self.trainer.load_model(settings.MODEL_SAVE_PATH)
 
     async def get_user_context(self, user_id: uuid.UUID, db: AsyncSession, exclude_ids: Optional[List[uuid.UUID]] = None) -> Optional[torch.Tensor]:
         """
@@ -201,7 +201,7 @@ class UnifiedIntelligenceService:
                 if (epoch + 1) % 10 == 0:
                     logger.info(f"📁 Epoch [{epoch+1}/{epochs}] - Avg Loss: {epoch_loss/(len(indices)//batch_size+1):.4f}")
 
-            self.trainer.save_model()
+            self.trainer.save_model(settings.MODEL_SAVE_PATH)
             logger.info("✅ Enhanced training completed. Triggering automatic sync (backfill)...")
             await self._do_backfill()
             logger.info("✅ Sync completed after training.")
