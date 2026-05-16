@@ -24,7 +24,7 @@ async def discovery_feed(
             processed_user_id = None
 
     results = await intel_service.discover(db, user_id=processed_user_id, query_text=query, skip=skip, limit=limit)
-    return results
+    return [r["id"] for r in results]
 
 @router.get("", response_model=List[uuid.UUID])
 async def discovery_search(
@@ -35,15 +35,15 @@ async def discovery_search(
     db: AsyncSession = Depends(get_db)
 ):
     """General Search: 순수하게 검색어(Query)에만 집중하여 결과를 반환합니다."""
-    return await intel_service.discover(
+    results = await intel_service.discover(
         db, 
         user_id=user_id, 
         query_text=query, 
         skip=skip, 
         limit=limit, 
-        query_weight=1.0,
         use_personalization=False  # 검색어 타워만 사용
     )
+    return [r["id"] for r in results]
 
 @router.post("/sync")
 async def sync_index(
