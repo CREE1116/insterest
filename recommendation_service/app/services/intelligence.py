@@ -53,6 +53,8 @@ class UnifiedIntelligenceService:
                     stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at DESC LIMIT 10")
                     res = await db.execute(stmt, {"uid": user_id})
                     history_ids = [row[0] for row in res.all()]
+                    # AI(GRU)가 시계열을 정확히 인식하도록 과거->최신(ASC) 순서로 다시 뒤집어줍니다.
+                    history_ids.reverse()
                 
                 if history_ids:
                     # 히스토리 임베딩 구성
@@ -75,14 +77,16 @@ class UnifiedIntelligenceService:
                             user_vec = self.model.get_user_embedding(u_hist).squeeze(0).cpu().numpy()
 
             # 3. 벡터 검색 실행 (Fusion Search)
+            # 모델의 훈련 과정과 100% 동일한 수학적 융합(Dynamic Gating + Interaction) 방식을 사용합니다.
             query_vec = None
-            if query_vec_128 is not None and user_vec is not None:
-                # 검색어 의도(80%)를 최우선으로 하고 개인화(20%)를 양념처럼 가미함
-                query_vec = 0.8 * query_vec_128 + 0.2 * user_vec
-            elif query_vec_128 is not None:
-                query_vec = query_vec_128
-            elif user_vec is not None:
-                query_vec = user_vec
+            if query_vec_128 is not None or user_vec is not None:
+                with torch.no_grad():
+                    q_t = torch.from_numpy(query_vec_128).to(self.device) if query_vec_128 is not None else torch.zeros(128).to(self.device)
+                    u_t = torch.from_numpy(user_vec).to(self.device) if user_vec is not None else torch.zeros(128).to(self.device)
+                    
+                    # model.py에 정의된 self.model.discovery() 를 통과시켜 훈련과 실전 환경을 일치시킴
+                    query_vec_t = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0)
+                    query_vec = query_vec_t.cpu().numpy()
 
             if query_vec is not None:
                 res = await db.execute(select(PostVector))
