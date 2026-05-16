@@ -158,9 +158,9 @@ class UnifiedIntelligenceService:
             except: return []
 
     async def train_daily_async(self, db: AsyncSession):
-        asyncio.create_task(self.train_daily(db))
+        asyncio.create_task(self.train_discovery(db))
 
-    async def train_daily(self, db: AsyncSession):
+    async def train_discovery(self, db: AsyncSession):
         """
         에폭을 늘려 적은 데이터에서도 변별력을 갖도록 학습합니다.
         """
