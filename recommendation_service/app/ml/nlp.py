@@ -1,9 +1,11 @@
-from sentence_transformers import SentenceTransformer
+import functools
+import numpy as np
 import torch
-from PIL import Image
-from app.core.config import settings
 import logging
 import io
+from PIL import Image
+from sentence_transformers import SentenceTransformer
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,18 +18,20 @@ class NLPEmbedder:
         self.model = SentenceTransformer(settings.MODEL_NAME, device=self.device)
         
         # 멀티모달 CLIP 모델 (이미지 임베딩용)
-        # clip-ViT-B-32는 512차원 또는 768차원(모델에 따라 다름)을 생성합니다.
-        # 여기서는 텍스트 모델과 차원을 맞추기 위해 768차원 출력을 지원하는 모델을 로드하는 것이 이상적입니다.
-        # 일단 동일한 SentenceTransformer 인터페이스를 통해 CLIP 모델을 로드할 수 있습니다.
         self.clip_model = SentenceTransformer('clip-ViT-B-32', device=self.device)
         
-    def embed_text(self, text: str) -> torch.Tensor:
-        """
-        Embed a single text string into a vector.
-        """
+    @functools.lru_cache(maxsize=1000)
+    def _embed_text_cached(self, text: str) -> np.ndarray:
         with torch.no_grad():
             embedding = self.model.encode(text, convert_to_tensor=True)
-        return embedding.to(dtype=torch.float32)
+        return embedding.cpu().numpy()
+
+    def embed_text(self, text: str) -> torch.Tensor:
+        """
+        Embed a single text string into a vector with LRU caching.
+        """
+        vec_np = self._embed_text_cached(text)
+        return torch.from_numpy(vec_np).to(self.device, dtype=torch.float32)
 
     def embed_batch(self, texts: list[str]) -> torch.Tensor:
         """

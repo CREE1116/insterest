@@ -75,10 +75,10 @@ spec:
         resources:
           limits:
             memory: "2Gi"
-            cpu: "1.0"
+            cpu: "2.0"
           requests:
             memory: "1Gi"
-            cpu: "500m"
+            cpu: "1.0"
         volumeMounts:
         - name: model-storage
           mountPath: /app/models
