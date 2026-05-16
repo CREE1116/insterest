@@ -70,5 +70,19 @@ async def run_full_pipeline():
            else "더 많은 데이터와 에폭(Epoch) 학습이 필요합니다."))
     print("═"*60)
 
+    # 5. CSV 파일 저장 (Excel용)
+    try:
+        import csv
+        csv_file = "ai_system_report.csv"
+        with open(csv_file, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Group", "Metric", "Score"])
+            for group, group_metrics in metrics.items():
+                for name, score in group_metrics.items():
+                    writer.writerow([group, name, score])
+        print(f"\n📂 CSV 리포트 생성 완료: {csv_file}")
+    except Exception as e:
+        print(f"⚠️ CSV 저장 실패: {e}")
+
 if __name__ == "__main__":
     asyncio.run(run_full_pipeline())
