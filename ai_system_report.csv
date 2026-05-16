@@ -1,0 +1,7 @@
+﻿Group,Metric,Score
+recommendation_quality,NDCG@5,0.0
+recommendation_quality,NDCG@10,0.0
+recommendation_quality,NDCG@20,0.0
+search_fidelity,NDCG@5,0.0
+search_fidelity,NDCG@10,0.0
+search_fidelity,NDCG@20,0.0

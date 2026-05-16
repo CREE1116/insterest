@@ -126,24 +126,22 @@ class UnifiedDiscoveryTrainer:
         
         return total_loss.item()
 
-    def save_model(self, path="discovery_engine.pth"):
-        torch.save(self.model.state_dict(), path)
-        logger.info(f"💾 Discovery Model saved to {path}")
-
-    def load_model(self, path="discovery_engine.pth"):
+    def save_model(self, path: str):
+        import os
         try:
-            self.model.load_state_dict(torch.load(path))
-            logger.info("✅ Discovery Model loaded successfully")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            torch.save(self.model.state_dict(), path)
+            logger.info(f"💾 Discovery Model saved to {path}")
         except Exception as e:
-            logger.warning(f"Could not load discovery model: {e}")
+            logger.error(f"❌ Failed to save model to {path}: {e}")
 
-    def save_model(self, path="discovery_engine.pth"):
-        torch.save(self.model.state_dict(), path)
-        logger.info(f"💾 Discovery Model saved to {path}")
-
-    def load_model(self, path="discovery_engine.pth"):
+    def load_model(self, path: str):
+        import os
+        if not os.path.exists(path):
+            logger.warning(f"⚠️ Model file not found at {path}, skipping load.")
+            return
         try:
-            self.model.load_state_dict(torch.load(path))
-            logger.info("✅ Discovery Model loaded successfully")
+            self.model.load_state_dict(torch.load(path, map_location=self.device))
+            logger.info(f"✅ Discovery Model loaded from {path}")
         except Exception as e:
-            logger.warning(f"Could not load discovery model: {e}")
+            logger.warning(f"Could not load discovery model from {path}: {e}")
