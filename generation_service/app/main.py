@@ -128,17 +128,21 @@ async def websocket_generate(websocket: WebSocket):
         # 3. 이미 데이터를 받았으므로 바로 생성을 시작합니다.
         async with generation_lock:
             await websocket.send_json({"status": "analyzing", "message": "🤖 무드 해석 중...", "progress": 40})
-            optimized = await prompt_optimizer.optimize(user_input)
-
-            await websocket.send_json({"status": "generating", "message": "🎨 이미지와 🎵 음악 생성 중...", "progress": 60})
+            include_music = request.get("include_music", True)
+            status_msg = "🎨 이미지와 🎵 음악 생성 중..." if include_music else "🎨 이미지 생성 중..."
+            await websocket.send_json({"status": "generating", "message": status_msg, "progress": 60})
             
             # 병렬 실행 및 예외 처리
+            include_music = request.get("include_music", True)
+            
             image_task = _content_generator.generate_image(optimized.get("image_prompt", user_input))
-            music_task = _content_generator.generate_music(optimized.get("music_prompt", user_input), request.get("duration", 10))
+            music_task = None
+            if include_music:
+                music_task = _content_generator.generate_music(optimized.get("music_prompt", user_input), request.get("duration", 10))
             
             # 생성 진행 중 웹소켓 연결 유지를 위해 주기적으로 업데이트 전송
             async def progress_heartbeat():
-                while not (image_task.done() and music_task.done()):
+                while not (image_task.done() and (music_task is None or music_task.done())):
                     try:
                         await asyncio.sleep(5)
                         if not websocket.client_state.name == "CONNECTED": break
@@ -148,7 +152,13 @@ async def websocket_generate(websocket: WebSocket):
             heartbeat_task = asyncio.create_task(progress_heartbeat())
             
             try:
-                image_path, music_path = await asyncio.gather(image_task, music_task)
+                tasks = [image_task]
+                if music_task:
+                    tasks.append(music_task)
+                
+                results = await asyncio.gather(*tasks)
+                image_path = results[0]
+                music_path = results[1] if len(results) > 1 else None
             finally:
                 heartbeat_task.cancel()
 
@@ -162,8 +172,8 @@ async def websocket_generate(websocket: WebSocket):
                     "image_url": image_path,
                     "music_url": music_path,
                     "image_prompt": optimized.get("image_prompt", "Default Image Prompt"),
-                    "music_prompt": optimized.get("music_prompt", "Default Music Prompt"),
-                    "content_type": "PHOTO_SOUND"
+                    "music_prompt": optimized.get("music_prompt", "Default Music Prompt") if include_music else None,
+                    "content_type": "PHOTO_SOUND" if include_music else "PHOTO"
                 }
                 try:
                     await producer.send_and_wait("generation.completed", kafka_msg)
@@ -184,7 +194,7 @@ async def websocket_generate(websocket: WebSocket):
                     "audio_url": music_path, # Explicitly named for frontend
                     "music_url": music_path,
                     "image_prompt": optimized.get("image_prompt", "Default Image Prompt"),
-                    "music_prompt": optimized.get("music_prompt", "Default Music Prompt")
+                    "music_prompt": optimized.get("music_prompt", "Default Music Prompt") if include_music else None
                 }
             }
             logger.info(f"Sending final response: {optimized.get('suggested_title')}")

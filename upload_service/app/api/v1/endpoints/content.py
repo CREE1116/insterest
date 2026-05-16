@@ -62,6 +62,10 @@ class PostCreate(BaseModel):
     caption: Optional[str] = None
     hashtags: List[str] = []
 
+class PostUpdate(BaseModel):
+    caption: Optional[str] = None
+    hashtags: Optional[List[str]] = None
+
 # --- Helper Functions ---
 def enrich_content_read(c: Content) -> ContentRead:
     """Content 객체에서 metadata_info와 generation_meta를 활용해 ContentRead 스키마를 채웁니다."""
@@ -457,3 +461,50 @@ async def delete_post(
     post.is_deleted = True
     await db.commit()
     return {"status": "success"}
+
+# 5. 게시물 수정 (Edit)
+@router.patch("/{post_id}", response_model=PostRead)
+async def update_post(
+    post_id: uuid.UUID,
+    post_update: PostUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: uuid.UUID = Depends(get_current_user_id)
+):
+    result = await db.execute(
+        select(Post)
+        .options(selectinload(Post.hashtags), selectinload(Post.content).selectinload(Content.media_list))
+        .where(Post.id == post_id)
+    )
+    post = result.scalar_one_or_none()
+    
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if post.user_id != current_user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this post")
+        
+    if post_update.caption is not None:
+        post.caption = post_update.caption
+        
+    if post_update.hashtags is not None:
+        # 기존 해시태그 제거 (중간 테이블 관계 끊기)
+        post.hashtags = []
+        await db.flush()
+        
+        # 새 해시태그 추가
+        for tag_name in post_update.hashtags:
+            stmt = select(Hashtag).where(Hashtag.tag == tag_name)
+            res = await db.execute(stmt)
+            hashtag = res.scalar_one_or_none()
+            if not hashtag:
+                hashtag = Hashtag(tag=tag_name)
+                db.add(hashtag)
+                await db.flush()
+            post.hashtags.append(hashtag)
+            
+    await db.commit()
+    await db.refresh(post)
+    
+    # 리턴 스키마 구성
+    p_read = PostRead.model_validate(post)
+    p_read.content = enrich_content_read(post.content)
+    return p_read

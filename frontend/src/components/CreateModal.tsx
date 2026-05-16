@@ -17,6 +17,7 @@ const CreateModal: React.FC<CreateModalProps> = ({ onClose, onSuccess }) => {
   const [hashtagInput, setHashtagInput] = useState('');
   
   const [prompt, setPrompt] = useState('');
+  const [includeMusic, setIncludeMusic] = useState(true);
   const [genResult, setGenResult] = useState<{ image_url: string, audio_url: string } | null>(null);
 
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -61,7 +62,10 @@ const CreateModal: React.FC<CreateModalProps> = ({ onClose, onSuccess }) => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/ws/generate`);
 
-    ws.onopen = () => ws.send(JSON.stringify({ user_input: prompt }));
+    ws.onopen = () => ws.send(JSON.stringify({ 
+      user_input: prompt,
+      include_music: includeMusic
+    }));
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.message) setStatusText(msg.message);
@@ -167,9 +171,11 @@ const CreateModal: React.FC<CreateModalProps> = ({ onClose, onSuccess }) => {
                       {genResult ? (
                         <div style={{ position: 'relative', width: '100%', borderRadius: '24px', overflow: 'hidden', boxShadow: 'var(--shadow-md)' }}>
                           <img src={genResult.image_url} style={{ width: '100%', display: 'block' }} alt="" />
-                          <div style={{ position: 'absolute', bottom: '1.5rem', left: '1.5rem', right: '1.5rem' }}>
-                            <audio src={genResult.audio_url} controls style={{ width: '100%', height: '40px' }} />
-                          </div>
+                          {genResult.audio_url && (
+                            <div style={{ position: 'absolute', bottom: '1.5rem', left: '1.5rem', right: '1.5rem' }}>
+                              <audio src={genResult.audio_url} controls style={{ width: '100%', height: '40px' }} />
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div style={{ width: '100%', height: '100%', backgroundColor: '#e2e8f0', borderRadius: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '1rem', color: '#94a3b8' }}>
@@ -231,6 +237,30 @@ const CreateModal: React.FC<CreateModalProps> = ({ onClose, onSuccess }) => {
                           style={{ width: '100%', height: '150px', padding: '1.5rem', borderRadius: '20px', backgroundColor: '#f1f5f9', border: 'none', outline: 'none', resize: 'none', fontSize: '1rem', fontWeight: 600 }}
                         />
                       </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f8fafc', padding: '1.25rem 1.5rem', borderRadius: '20px', border: '1px solid #f1f5f9' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <div style={{ width: '2.5rem', height: '2.5rem', backgroundColor: includeMusic ? '#fee2e2' : '#f1f5f9', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.3s' }}>
+                            <Music size={18} color={includeMusic ? 'var(--primary-red)' : '#94a3b8'} />
+                          </div>
+                          <div>
+                            <p style={{ fontSize: '0.875rem', fontWeight: 800 }}>배경음악 생성</p>
+                            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>작품의 분위기에 맞는 음악 포함</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => setIncludeMusic(!includeMusic)}
+                          style={{ 
+                            width: '3.5rem', height: '2rem', backgroundColor: includeMusic ? 'var(--primary-red)' : '#cbd5e1', borderRadius: '1rem', position: 'relative', transition: 'all 0.3s'
+                          }}
+                        >
+                          <motion.div 
+                            animate={{ x: includeMusic ? '1.6rem' : '0.2rem' }}
+                            style={{ position: 'absolute', top: '0.2rem', left: '0.2rem', width: '1.6rem', height: '1.6rem', backgroundColor: 'white', borderRadius: '50%', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
+                          />
+                        </button>
+                      </div>
+
                       <button onClick={handleStartAI} disabled={!prompt.trim()} style={{ backgroundColor: 'var(--primary-red)', color: 'white', padding: '1.25rem', borderRadius: 'var(--radius-full)', fontWeight: 900, fontSize: '1.125rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', opacity: prompt.trim() ? 1 : 0.5 }}>
                         <Wand2 size={20} /> AI 아트 생성하기
                       </button>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Volume2, VolumeX, Heart, MessageCircle, Bookmark, Trash2, Send, FolderPlus, ChevronRight } from 'lucide-react';
+import { X, Volume2, VolumeX, Heart, MessageCircle, Bookmark, Trash2, Send, FolderPlus, ChevronRight, Edit3 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import client from '../api/client';
 import { usePostStats, usePostComments, useCollections, useToggleLikeMutation, useCommentMutation } from '../hooks/usePostQueries';
@@ -37,6 +37,9 @@ const PostModal: React.FC<PostModalProps> = ({ post, isSavedInitial = false, onC
   const [isMuted, setIsMuted] = useState(true);
   const [progress, setProgress] = useState(0);
   const [isSaved, setIsSaved] = useState(isSavedInitial);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editCaption, setEditCaption] = useState(post.caption);
+  const [editHashtags, setEditHashtags] = useState(post.hashtags?.map((h: any) => h.tag).join(', ') || '');
   const [newCollectionName, setNewCollectionName] = useState('');
   const [saveStatus, setSaveStatus] = useState('');
   const saveMenuRef = useRef<HTMLDivElement>(null);
@@ -92,6 +95,26 @@ const PostModal: React.FC<PostModalProps> = ({ post, isSavedInitial = false, onC
       onClose();
     } catch (e) {
       alert('게시물 삭제 실패');
+    }
+  };
+
+  const handleUpdatePost = async () => {
+    try {
+      const hashtags = editHashtags.split(',').map((tag: string) => tag.trim().replace(/^#/, '')).filter((tag: string) => tag);
+      await client.patch(`/upload/content/${post.id}`, {
+        caption: editCaption,
+        hashtags: hashtags
+      });
+      alert('수정되었습니다.');
+      setIsEditing(false);
+      // 부모 컴포넌트 데이터 갱신 (Invalidate queries)
+      queryClient.invalidateQueries({ queryKey: ['feed'] });
+      queryClient.invalidateQueries({ queryKey: ['search'] });
+      queryClient.invalidateQueries({ queryKey: ['post', post.id] });
+      // 현재 포스트 객체도 업데이트 (로컬 상태 반영은 어려우므로 일단 창 닫기 혹은 새로고침)
+      onClose();
+    } catch (e) {
+      alert('수정 실패');
     }
   };
 
@@ -196,8 +219,31 @@ const PostModal: React.FC<PostModalProps> = ({ post, isSavedInitial = false, onC
 
           <div className="no-scrollbar" style={{ flex: 1, overflowY: 'auto', padding: '1.5rem' }}>
             <div style={{ marginBottom: '2rem' }}>
-              <p style={{ fontSize: '0.9375rem', fontWeight: 500, lineHeight: 1.6 }}>{post.caption}</p>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.75rem' }}>{post.hashtags?.map((h: any) => <span key={h.tag} style={{ color: '#3b82f6', fontSize: '0.8125rem', fontWeight: 600 }}>#{h.tag}</span>)}</div>
+              {isEditing ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <textarea 
+                    value={editCaption} 
+                    onChange={e => setEditCaption(e.target.value)}
+                    placeholder="설명을 입력하세요..."
+                    style={{ width: '100%', minHeight: '100px', padding: '1rem', borderRadius: '12px', border: '1px solid var(--primary-red)', outline: 'none', resize: 'none', fontWeight: 600 }}
+                  />
+                  <input 
+                    value={editHashtags}
+                    onChange={e => setEditHashtags(e.target.value)}
+                    placeholder="해시태그 (쉼표 구분)"
+                    style={{ width: '100%', padding: '0.75rem 1rem', borderRadius: '12px', border: '1px solid var(--primary-red)', outline: 'none', fontWeight: 600 }}
+                  />
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button onClick={handleUpdatePost} style={{ flex: 1, backgroundColor: 'var(--black)', color: 'white', padding: '0.75rem', borderRadius: '8px', fontWeight: 800 }}>저장</button>
+                    <button onClick={() => setIsEditing(false)} style={{ flex: 1, backgroundColor: '#f1f5f9', color: '#1a1a1a', padding: '0.75rem', borderRadius: '8px', fontWeight: 800 }}>취소</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p style={{ fontSize: '0.9375rem', fontWeight: 500, lineHeight: 1.6 }}>{post.caption}</p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.75rem' }}>{post.hashtags?.map((h: any) => <span key={h.tag} style={{ color: '#3b82f6', fontSize: '0.8125rem', fontWeight: 600 }}>#{h.tag}</span>)}</div>
+                </>
+              )}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               {safeComments.map((c: any, i: number) => (
@@ -220,9 +266,14 @@ const PostModal: React.FC<PostModalProps> = ({ post, isSavedInitial = false, onC
               <motion.button whileTap={{ scale: 0.8 }} onClick={handleToggleLike} style={{ color: isLiked ? 'var(--primary-red)' : 'var(--text-main)', border: 'none', backgroundColor: 'transparent', padding: 0 }}><Heart size={28} fill={isLiked ? 'var(--primary-red)' : 'none'} strokeWidth={2.5} /></motion.button>
               
               {(user?.id === post.user_id || user?.user_id === post.user_id) && (
-                <button onClick={handleDeletePost} style={{ color: '#94a3b8', border: 'none', backgroundColor: 'transparent', padding: 0 }} title="게시물 삭제">
-                  <Trash2 size={24} strokeWidth={2.5} />
-                </button>
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <button onClick={() => setIsEditing(!isEditing)} style={{ color: isEditing ? 'var(--primary-red)' : '#94a3b8', border: 'none', backgroundColor: 'transparent', padding: 0 }} title="게시물 수정">
+                    <Edit3 size={24} strokeWidth={2.5} />
+                  </button>
+                  <button onClick={handleDeletePost} style={{ color: '#94a3b8', border: 'none', backgroundColor: 'transparent', padding: 0 }} title="게시물 삭제">
+                    <Trash2 size={24} strokeWidth={2.5} />
+                  </button>
+                </div>
               )}
 
               <div style={{ marginLeft: 'auto', position: 'relative' }}>
