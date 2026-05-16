@@ -100,7 +100,8 @@ class UnifiedIntelligenceService:
                         
                         score = np.dot(query_vec, p_vec_128) / (np.linalg.norm(query_vec) * np.linalg.norm(p_vec_128) + 1e-9)
                         caption = (p.content_text or {}).get("caption", "")
-                        scored.append({"id": p.post_id, "score": float(score), "caption": caption})
+                        # UUID 객체를 Pydantic이 안전하게 직렬화할 수 있도록 string으로 명시적 변환
+                        scored.append({"id": str(p.post_id), "score": float(score), "caption": caption})
                 
                 scored.sort(key=lambda x: x["score"], reverse=True)
                 return scored[skip:skip+limit]
@@ -108,7 +109,7 @@ class UnifiedIntelligenceService:
             # Fallback: 최신순
             stmt = text("SELECT id, caption FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
             res = await db.execute(stmt, {"l": limit, "s": skip})
-            return [{"id": row[0], "score": 0.0, "caption": row[1]} for row in res.all()]
+            return [{"id": str(row[0]), "score": 0.0, "caption": row[1]} for row in res.all()]
 
         except Exception as e:
             logger.error(f"❌ Error in discovery: {e}", exc_info=True)
