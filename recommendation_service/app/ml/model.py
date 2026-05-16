@@ -96,15 +96,10 @@ class UnifiedDiscoveryModel(nn.Module):
 
     def get_query_embedding(self, raw_query_vec):
         """
-        검색어도 아이템과 동일한 Fusion 공간으로 투영 (Scale Normalization 포함)
+        검색어는 전용 투영 레이어(query_proj)를 거쳐 128차원으로 변환됩니다.
         """
-        batch_size = raw_query_vec.size(0)
-        device = raw_query_vec.device
-        return self.get_item_embedding(
-            raw_query_vec, 
-            torch.zeros((batch_size, 768), device=device),
-            torch.zeros((batch_size, 512), device=device)
-        )
+        projected = self.query_proj(raw_query_vec)
+        return F.normalize(projected, p=2, dim=-1)
 
     def get_user_embedding(self, history_vecs):
         return self.user_tower(history_vecs)

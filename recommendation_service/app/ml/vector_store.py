@@ -39,9 +39,9 @@ class RedisVectorStore:
             else:
                 logger.error(f"❌ Failed to create Redis index: {e}")
 
-    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray):
+    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray, metadata: Dict[str, Any] = None):
         """
-        Store projected 128-dim vector in Redis
+        오직 128차원 투영 벡터와 메타데이터만 Redis에 저장 (실시간 검색용)
         """
         key = f"post:{post_id}"
         vector_bytes = vector.astype(np.float32).tobytes()
@@ -50,6 +50,12 @@ class RedisVectorStore:
             "post_id": str(post_id),
             "vector": vector_bytes
         }
+        
+        if metadata:
+            for k, v in metadata.items():
+                if isinstance(v, (str, int, float, bool)):
+                    mapping[k] = str(v)
+                    
         self.r.hset(key, mapping=mapping)
 
     def search_knn(self, query_vec: np.ndarray, k: int = 50) -> List[uuid.UUID]:

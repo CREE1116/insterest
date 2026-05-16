@@ -33,22 +33,26 @@ class UnifiedIntelligenceService:
 
     async def discover(self, db: AsyncSession, query_text: str = None, user_id: uuid.UUID = None, 
                        limit: int = 20, skip: int = 0, use_personalization: bool = True,
-                       exclude_history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
+                       exclude_history_ids: List[uuid.UUID] = None,
+                       history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
         try:
             final_ids = []
             
-            # 1. 텍스트 임베딩 (검색어 있는 경우)
-            target_vec_np = None
+            # 1. 텍스트 임베딩 및 투영 (768 -> 128)
+            query_vec_128 = None
             if query_text:
-                target_vec_np = nlp_embedder.embed_text(query_text).cpu().numpy()
+                raw_vec = nlp_embedder.embed_text(query_text).to(self.device).unsqueeze(0)
+                with torch.no_grad():
+                    # 새롭게 수정된 전용 투영 레이어 사용
+                    query_vec_128 = self.model.get_query_embedding(raw_vec).squeeze(0).cpu().numpy()
 
-            # 2. 개인화 추천 (유저 ID 있는 경우)
+            # 2. 개인화 추천
             user_vec = None
-            if user_id and use_personalization:
-                # 유저 히스토리 로드
-                stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at DESC LIMIT 10")
-                res = await db.execute(stmt, {"uid": user_id})
-                history_ids = [row[0] for row in res.all()]
+            if (user_id or history_ids) and use_personalization:
+                if not history_ids and user_id:
+                    stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at DESC LIMIT 10")
+                    res = await db.execute(stmt, {"uid": user_id})
+                    history_ids = [row[0] for row in res.all()]
                 
                 if history_ids:
                     # 히스토리 임베딩 구성
@@ -71,12 +75,12 @@ class UnifiedIntelligenceService:
                             user_vec = self.model.get_user_embedding(u_hist).squeeze(0).cpu().numpy()
 
             # 3. 벡터 검색 실행 (Fusion Search)
-            # 검색어 벡터(target_vec_np)와 유저 취향 벡터(user_vec)를 결합
             query_vec = None
-            if target_vec_np is not None and user_vec is not None:
-                query_vec = 0.5 * target_vec_np + 0.5 * user_vec # Fusion
-            elif target_vec_np is not None:
-                query_vec = target_vec_np
+            if query_vec_128 is not None and user_vec is not None:
+                # 검색어 의도(80%)를 최우선으로 하고 개인화(20%)를 양념처럼 가미함
+                query_vec = 0.8 * query_vec_128 + 0.2 * user_vec
+            elif query_vec_128 is not None:
+                query_vec = query_vec_128
             elif user_vec is not None:
                 query_vec = user_vec
 
@@ -85,12 +89,18 @@ class UnifiedIntelligenceService:
                 all_posts = res.scalars().all()
                 
                 scored = []
-                for p in all_posts:
-                    if exclude_history_ids and p.post_id in exclude_history_ids: continue
-                    p_vec = np.frombuffer(p.caption_vector, dtype=np.float32)
-                    # 코사인 유사도
-                    score = np.dot(query_vec, p_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(p_vec) + 1e-9)
-                    scored.append({"id": p.post_id, "score": float(score), "caption": p.content_text.get("caption", "")})
+                with torch.no_grad():
+                    for p in all_posts:
+                        if exclude_history_ids and p.post_id in exclude_history_ids: continue
+                        
+                        c = torch.from_numpy(np.frombuffer(p.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                        t = torch.from_numpy(np.frombuffer(p.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                        img = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                        p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
+                        
+                        score = np.dot(query_vec, p_vec_128) / (np.linalg.norm(query_vec) * np.linalg.norm(p_vec_128) + 1e-9)
+                        caption = (p.content_text or {}).get("caption", "")
+                        scored.append({"id": p.post_id, "score": float(score), "caption": caption})
                 
                 scored.sort(key=lambda x: x["score"], reverse=True)
                 return scored[skip:skip+limit]
@@ -125,8 +135,14 @@ class UnifiedIntelligenceService:
             await db.commit()
             
             # 2. Redis Vector Store 저장 (실시간 검색용)
-            # 텍스트 벡터를 기본 인덱스로 사용
-            vector_store.upsert_vector(str(post_id), caption_vec, metadata)
+            # 오직 128차원 투영 퓨전 벡터만 Redis에 전송
+            with torch.no_grad():
+                c = torch.from_numpy(caption_vec).to(self.device).unsqueeze(0)
+                t = torch.from_numpy(hashtag_vec).to(self.device).unsqueeze(0)
+                img = torch.from_numpy(image_vec).to(self.device).unsqueeze(0)
+                p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
+            
+            vector_store.upsert_vector(str(post_id), p_vec_128, metadata)
             
         except Exception as e:
             logger.error(f"❌ Indexing failed for {post_id}: {e}")
@@ -140,8 +156,13 @@ class UnifiedIntelligenceService:
             res = await db.execute(select(PostVector))
             posts = res.scalars().all()
             for p in posts:
-                vec = np.frombuffer(p.caption_vector, dtype=np.float32)
-                vector_store.upsert_vector(str(p.post_id), vec, p.content_text)
+                with torch.no_grad():
+                    c = torch.from_numpy(np.frombuffer(p.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    t = torch.from_numpy(np.frombuffer(p.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    img = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
+                    
+                vector_store.upsert_vector(str(p.post_id), p_vec_128, p.content_text)
             logger.info(f"✅ Backfilled {len(posts)} posts to Redis.")
         except Exception as e:
             logger.error(f"❌ Backfill failed: {e}")
@@ -259,8 +280,16 @@ class UnifiedIntelligenceService:
             # 2. 추천 정확도 측정
             if test_users:
                 for user_id, pids in test_users.items():
-                    target_id = pids[-1]
-                    raw_reco = await self.discover(db, user_id=user_id, limit=50, exclude_history_ids=[target_id])
+                    history = pids[:-1]  # 정답 제외
+                    target_id = pids[-1] # 정답
+                    
+                    raw_reco = await self.discover(
+                        db, 
+                        user_id=user_id, 
+                        limit=50, 
+                        history_ids=history[-10:], 
+                        exclude_history_ids=history
+                    )
                     reco_ids = [str(r["id"]) for r in raw_reco]
                     
                     for k in k_list:
@@ -277,7 +306,7 @@ class UnifiedIntelligenceService:
             search_metrics = {k: {"recall": [], "ndcg": []} for k in k_list}
             res = await db.execute(select(PostVector).limit(50))
             for post in res.scalars().all():
-                caption = post.content_text.get("caption", "")
+                caption = (post.content_text or {}).get("caption", "")
                 if not caption: continue
                 results = await self.discover(db, query_text=caption, limit=50, use_personalization=False)
                 top_ids = [str(r["id"]) for r in results]
