@@ -13,7 +13,7 @@ class UnifiedDiscoveryTrainer:
     """
     Advanced Trainer featuring Query Simulation and Multi-modal Alignment (CLIP-style)
     """
-    def __init__(self, model: UnifiedDiscoveryModel, lr=1e-4, temperature=0.1): # 온도를 약간 올림
+    def __init__(self, model: UnifiedDiscoveryModel, lr=1e-4, temperature=0.05): # 온도를 0.05로 낮춤 (Harder Matching)
         self.model = model
         # weight_decay 추가로 공간 붕괴 방지
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-5)
@@ -98,9 +98,27 @@ class UnifiedDiscoveryTrainer:
             c_emb = F.normalize(self.model.caption_proj(target_items["caption"]), p=2, dim=-1)
             i_emb = F.normalize(self.model.image_proj(target_items["image"]), p=2, dim=-1)
             loss_alignment = self.multimodal_alignment_loss(c_emb, i_emb)
+            
+        # 8. Direct Query-Item & Query-Image Alignment (순수 벡터 검색 정확도 향상용)
+        # 마스킹되지 않은 진짜 Query가 있을 때만 해당 Loss 추가
+        valid_query_mask = mask.squeeze(-1)
+        if valid_query_mask.sum() > 0:
+            valid_query_vecs = query_vecs[valid_query_mask]
+            # 8-1. 순수 검색어와 최종 타겟 아이템 벡터의 직접 일치
+            valid_target_vecs = target_item_vecs[valid_query_mask]
+            loss_query_item = self.info_nce_loss(valid_query_vecs, valid_target_vecs)
+            
+            # 8-2. 순수 검색어와 이미지 벡터 간의 멀티모달 직접 일치 
+            # 텍스트가 "절대 기준(Anchor)"이 되도록 valid_query_vecs를 detach()하여 
+            # 이미지가 텍스트 공간으로 끌려오도록(정렬되도록) 강제합니다.
+            valid_image_embs = i_emb[valid_query_mask]
+            loss_query_image = self.info_nce_loss(valid_query_vecs.detach(), valid_image_embs)
+        else:
+            loss_query_item = torch.tensor(0.0).to(user_histories.device)
+            loss_query_image = torch.tensor(0.0).to(user_histories.device)
         
-        # Total Loss (Structural Loss 비중을 높임)
-        total_loss = loss_discovery + 1.0 * loss_structure + 0.5 * loss_alignment
+        # Total Loss (모든 Loss를 융합하여 계산)
+        total_loss = loss_discovery + 1.0 * loss_structure + 0.5 * loss_alignment + 1.0 * loss_query_item + 1.0 * loss_query_image
         
         total_loss.backward()
         self.optimizer.step()

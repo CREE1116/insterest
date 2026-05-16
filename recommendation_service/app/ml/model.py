@@ -107,9 +107,15 @@ class UnifiedDiscoveryModel(nn.Module):
 
     def discovery(self, query_vec, user_vec):
         """
-        Interaction-based Fusion: v = q + u + (q * u)
-        단순 가중합(alpha)에서 발생하는 정보 손실을 막고, 두 feature의 상호작용을 극대화
+        Interaction-based Fusion with Dynamic Gating: v = q + u_gated + (q * u_gated)
+        단순 가중합(alpha)에서 발생하는 정보 손실을 막고, 검색어가 명확할 때는 유저 취향의 개입을 차단합니다.
         """
-        interaction = query_vec * user_vec
-        combined_vec = query_vec + user_vec + interaction
+        # 검색어(query_vec)의 정보량(norm) 계산
+        query_intensity = torch.norm(query_vec, dim=-1, keepdim=True)
+        
+        # 검색어 강도가 높을수록 유저 벡터의 영향력을 감소시킴 (0에 수렴)
+        gated_user_vec = user_vec * (1.0 - torch.tanh(query_intensity))
+        
+        interaction = query_vec * gated_user_vec
+        combined_vec = query_vec + gated_user_vec + interaction
         return F.normalize(combined_vec, p=2, dim=-1)
