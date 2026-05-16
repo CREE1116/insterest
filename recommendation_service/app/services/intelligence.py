@@ -72,10 +72,11 @@ class UnifiedIntelligenceService:
                                 hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
 
                         if hist_embs:
-                            while len(hist_embs) < 10:
-                                hist_embs.insert(0, torch.zeros(128).to(self.device))
-                            u_hist = torch.stack(hist_embs).unsqueeze(0)
-                            user_vec = self.model.get_user_embedding(u_hist).squeeze(0).cpu().numpy()
+                            # 단순 평균 풀링: 좋아요한 아이템 임베딩의 centroid
+                            # UserTower(랜덤 가중치)보다 훨씬 신뢰할 수 있는 유저 벡터
+                            stacked = torch.stack(hist_embs)  # [N, 128]
+                            user_vec_t = stacked.mean(dim=0)  # centroid
+                            user_vec = torch.nn.functional.normalize(user_vec_t, p=2, dim=-1).cpu().numpy()
 
             # 3. 검색 vs 추천 분리
             if query_vec_128 is not None and user_vec is None:
