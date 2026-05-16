@@ -96,8 +96,6 @@ jobs:
           path: 'infra-repo'
 
       - name: Update Kubernetes manifests
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           # Clean old manifests in the infra repo
           rm -rf infra-repo/k8s/*
@@ -105,14 +103,6 @@ jobs:
           
           # Copy all manifests from main repo to infra repo
           cp -r infra/k8s/* infra-repo/k8s/
-          
-          # Inject Secrets into the generation deployment using envsubst
-          if [ -n "$GEMINI_API_KEY" ]; then
-            echo "Injecting GEMINI_API_KEY into manifests..."
-            envsubst '${GEMINI_API_KEY}' < infra/k8s/generation/deployment.yaml > infra-repo/k8s/generation/deployment.yaml
-          else
-            echo "Warning: GEMINI_API_KEY secret is not set!"
-          fi
           
           cd infra-repo
           
