@@ -110,7 +110,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine
+        image: postgres:16.6-alpine
         imagePullPolicy: IfNotPresent
         args: ["-c", "max_connections=500", "-c", "shared_buffers=512MB"]
         resources:
