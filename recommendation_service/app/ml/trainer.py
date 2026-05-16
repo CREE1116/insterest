@@ -88,20 +88,16 @@ class UnifiedDiscoveryTrainer:
 
         self.item_optimizer.zero_grad()
 
-        # text_proj 공간이 SBERT 원본의 의미 구조를 보존하도록 강제
-        # (고양이들끼리 가깝고, 강아지는 멀리 — SBERT가 이미 알고 있는 관계를 128차원에 이식)
+        # 텍스트 투영: SBERT 원본 의미 구조를 128차원에 보존
         c_emb = F.normalize(self.model.text_proj(caption_vecs), p=2, dim=-1)
         loss_struct = self.similarity_preservation_loss(c_emb, caption_vecs)
 
-        # 해시태그도 text_proj 공간 구조 보존
-        h_emb = F.normalize(self.model.hashtag_proj(hashtag_vecs), p=2, dim=-1)
-        loss_struct_h = self.similarity_preservation_loss(h_emb, hashtag_vecs)
-
-        # 이미지 투영을 텍스트 공간으로 당기되, 이미지 벡터가 유의미할 때만 적용
+        # 이미지 투영: 텍스트 벡터를 anchor로 삼아 이미지가 텍스트 공간으로 따라오도록
+        # c_emb.detach() → 텍스트 쪽 그래디언트는 끊음, 오직 image_proj만 업데이트
         i_emb = F.normalize(self.model.image_proj(image_vecs), p=2, dim=-1)
-        loss_img = self.similarity_preservation_loss(i_emb, F.normalize(image_vecs, p=2, dim=-1))
+        loss_img_align = F.mse_loss(i_emb, c_emb.detach())
 
-        total_loss = loss_struct + 0.5 * loss_struct_h + 0.3 * loss_img
+        total_loss = loss_struct + 0.5 * loss_img_align
         total_loss.backward()
         self.item_optimizer.step()
         return total_loss.item()
