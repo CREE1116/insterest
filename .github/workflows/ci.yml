@@ -130,6 +130,5 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "chore: sync manifests and update image tags (GitOps sync)"
-            git pull --rebase origin master
-            git push
+            git push --force origin master
           fi
