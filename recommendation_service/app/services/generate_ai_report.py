@@ -59,16 +59,20 @@ async def run_full_pipeline():
     
     metrics = report["metrics"]
     print(f" [시맨틱 검색 성능 (Search Fidelity)]")
-    for k, v in metrics["search_fidelity"].items():
-        print(f"  - {k}: {v:.4f} " + ("✅" if v > 0.8 else "📈"))
+    for k in [5, 10, 20]:
+        n = metrics["search_fidelity"].get(f"NDCG@{k}", 0)
+        r = metrics["search_fidelity"].get(f"Recall@{k}", 0)
+        print(f"  - @{k}: NDCG={n:.4f}, Recall={r:.4f} " + ("✅" if n > 0.7 else "📈"))
         
     print(f"\n [개인화 추천 성능 (Recommendation Quality)]")
-    for k, v in metrics["recommendation_quality"].items():
-        print(f"  - {k}: {v:.4f} " + ("✅" if v > 0.5 else "📈"))
+    for k in [5, 10, 20]:
+        n = metrics["recommendation_quality"].get(f"NDCG@{k}", 0)
+        r = metrics["recommendation_quality"].get(f"Recall@{k}", 0)
+        print(f"  - @{k}: NDCG={n:.4f}, Recall={r:.4f} " + ("✅" if n > 0.4 else "📈"))
         
     print("-" * 60)
     print(" 💡 분석 결과: " + 
-          ("시스템이 유저의 취향을 성공적으로 학습했습니다." if metrics["recommendation_quality"]["NDCG@10"] > 0.4 
+          ("시스템이 유저의 취향을 성공적으로 학습했습니다." if metrics["recommendation_quality"].get("NDCG@10", 0) > 0.4 
            else "더 많은 데이터와 에폭(Epoch) 학습이 필요합니다."))
     print("═"*60)
 
