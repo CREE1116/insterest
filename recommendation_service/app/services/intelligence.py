@@ -264,6 +264,11 @@ class UnifiedIntelligenceService:
             
             logger.info(f"⏱️ Step 3 (Training): {time.time()-t2:.2f}s")
             self.trainer.save_model(settings.MODEL_SAVE_PATH)
+            
+            # 학습 완료 즉시, DB에 남아있는 모든 진짜 포스트 벡터를 새로운 가중치로 재계산하여 Redis에 즉각 덮어씌웁니다 (Sync)
+            logger.info("🔄 [Sync] Backfilling all remaining posts to synchronize Redis vectors with newly trained weights...")
+            await self.backfill_all_posts(db)
+            
             logger.info(f"✅ Total Pipeline: {time.time()-total_start:.2f}s")
             
         except Exception as e:
