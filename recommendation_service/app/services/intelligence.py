@@ -81,8 +81,16 @@ class UnifiedIntelligenceService:
             query_vec = None
             if query_vec_128 is not None or user_vec is not None:
                 with torch.no_grad():
-                    q_t = torch.from_numpy(query_vec_128).to(self.device) if query_vec_128 is not None else torch.zeros(128).to(self.device)
-                    u_t = torch.from_numpy(user_vec).to(self.device) if user_vec is not None else torch.zeros(128).to(self.device)
+                    # 빈 값(None)일 경우, 훈련 때와 동일하게 0벡터를 투영레이어에 통과시킨 '기본 가중치 벡터'를 사용해야 합니다. (단순 0벡터는 OOD 에러 유발)
+                    if query_vec_128 is not None:
+                        q_t = torch.from_numpy(query_vec_128).to(self.device)
+                    else:
+                        q_t = self.model.get_query_embedding(torch.zeros(1, 768).to(self.device)).squeeze(0)
+                        
+                    if user_vec is not None:
+                        u_t = torch.from_numpy(user_vec).to(self.device)
+                    else:
+                        u_t = self.model.get_user_embedding(torch.zeros(1, 10, 128).to(self.device)).squeeze(0)
                     
                     # model.py에 정의된 self.model.discovery() 를 통과시켜 훈련과 실전 환경을 일치시킴
                     query_vec_t = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0)
