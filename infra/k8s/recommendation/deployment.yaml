@@ -64,7 +64,7 @@ spec:
         - name: COMMENT_SERVICE_URL
           value: "http://comment-service:8005"
         - name: MODEL_SAVE_PATH
-          value: "/app/models/discovery_engine.pth"
+          value: "/data/models/discovery_engine.pth"
         readinessProbe:
           httpGet:
             path: /health
