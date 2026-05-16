@@ -146,16 +146,23 @@ class UnifiedIntelligenceService:
                     if row[0] not in final_ids:
                         final_ids.append(row[0])
 
-            # Apply Paging
-            return final_ids[skip:skip+limit]
+            # Apply Paging and Return Rich Metadata
+            paged_ids = final_ids[skip:skip+limit]
+            
+            rich_results = []
+            for pid in paged_ids:
+                res = await db.execute(select(PostVector).where(PostVector.post_id == pid))
+                pv = res.scalar_one_or_none()
+                rich_results.append({
+                    "id": str(pid),
+                    "score": 1.0, # Fallback score
+                    "caption": pv.content_text.get("caption", "") if pv and pv.content_text else ""
+                })
+            return rich_results
 
         except Exception as e:
             logger.error(f"❌ Error in hybrid discovery: {e}", exc_info=True)
-            try:
-                stmt = text("SELECT id FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC OFFSET :s LIMIT :l")
-                res = await db.execute(stmt.bindparams(s=skip, l=limit))
-                return [row[0] for row in res.all()]
-            except: return []
+            return []
 
     async def train_daily_async(self, db: AsyncSession):
         asyncio.create_task(self.train_discovery(db))

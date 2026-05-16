@@ -1,5 +1,6 @@
 import asyncio
 import time
+from sqlalchemy import text
 from app.db.session import AsyncSessionLocal
 from app.services.intelligence import intel_service
 from app.services.seed_dummy_data import seed as seed_posts
