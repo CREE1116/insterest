@@ -83,7 +83,7 @@ data:
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres-service
+  name: postgres-headless
 spec:
   ports:
     - port: 5432
@@ -97,7 +97,7 @@ kind: StatefulSet
 metadata:
   name: postgres
 spec:
-  serviceName: "postgres-service"
+  serviceName: "postgres-headless"
   replicas: 1
   revisionHistoryLimit: 3
   selector:
