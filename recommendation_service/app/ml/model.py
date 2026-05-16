@@ -79,10 +79,13 @@ class UnifiedDiscoveryModel(nn.Module):
         # Scale-normalized Concat
         combined = torch.cat([c_emb, h_emb, i_emb], dim=-1)
         
-        # 텍스트(Caption)를 베이스로 삼고 나머지를 융합한 뒤, 
-        # 다시 텍스트 벡터를 더해줌으로써(Residual) 텍스트의 정체성을 강제함
-        fused = self.fusion_mlp(combined)
-        final_emb = fused + c_emb 
+        # LayerNorm(128)을 통과한 fused는 벡터 크기(Norm)가 약 11.3으로 매우 커집니다.
+        # 반면 c_emb는 L2 정규화되어 크기가 딱 1.0입니다.
+        # 이대로 더하면 텍스트 정체성이 10배 이상 압도당하므로, fused도 크기를 1로 맞춰줍니다.
+        fused = F.normalize(self.fusion_mlp(combined), p=2, dim=-1)
+        
+        # 텍스트 정체성(50%)과 멀티모달 문맥(50%)을 1:1로 결합
+        final_emb = 0.5 * fused + 0.5 * c_emb 
         
         # ANN 품질을 위해 최종 L2 Normalize
         return F.normalize(final_emb, p=2, dim=-1)
