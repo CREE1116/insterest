@@ -1,4 +1,15 @@
 apiVersion: v1
+kind: Secret
+metadata:
+  name: generation-secrets
+  annotations:
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+    argocd.argoproj.io/sync-options: Prune=false
+type: Opaque
+stringData:
+  GEMINI_API_KEY: "dummy-key-please-replace-manually"
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: generation-pvc
