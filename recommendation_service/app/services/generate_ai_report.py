@@ -33,7 +33,8 @@ async def run_full_pipeline():
             import uuid
             virtual_user_ids = [uuid.uuid5(uuid.NAMESPACE_DNS, name) for name in PERSONAS.keys()]
             
-            await db.execute(text("DELETE FROM interaction.likes WHERE user_id IN :ids"), {"ids": tuple(virtual_user_ids)})
+            for uid in virtual_user_ids:
+                await db.execute(text("DELETE FROM interaction.likes WHERE user_id = :uid"), {"uid": uid})
             
             # 시딩된 가상 포스트들 삭제 (content_text의 'is_dummy' 플래그 활용하거나 전체 삭제 후 재동기화)
             # 여기서는 안전하게 interaction 데이터만 날리고 포스트는 backfill로 관리하는 방식을 제안하지만,
