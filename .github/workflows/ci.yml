@@ -96,8 +96,15 @@ jobs:
 
       - name: Update Kubernetes manifests
         run: |
-          # Copy all manifests from main repo to infra repo
-          cp -r infra/k8s/* infra/
+          # The infra repo is checked out at 'infra' path.
+          # ArgoCD expects manifests in the 'k8s' directory of that repo.
+          
+          # Clean old manifests to prevent ghost deployments
+          rm -rf infra/k8s/*
+          mkdir -p infra/k8s
+          
+          # Copy all manifests from main repo to the 'k8s' folder in infra repo
+          cp -r infra/k8s/* infra/k8s/
           
           cd infra
           
