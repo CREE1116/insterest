@@ -38,14 +38,14 @@ async def seed():
             # 2. 이미지 벡터 (가상은 0으로 처리하거나 랜덤 생성)
             i_vec = np.random.randn(512).astype(np.float32)
             
-            # 3. 인덱싱 (메타데이터 포함)
+            # 3. 인덱싱 (메타데이터 포함 + 더미 플래그)
             await intel_service.index_post(
                 db, 
                 post_id, 
                 c_vec, 
                 h_vec, 
                 i_vec, 
-                metadata={"caption": caption, "tags": item["tags"]}
+                metadata={"caption": caption, "tags": item["tags"], "is_dummy": True}
             )
             
     print("\n✅ 시딩 완료! 이제 검색과 지표를 확인해 보세요.")

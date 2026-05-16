@@ -24,6 +24,26 @@ async def run_full_pipeline():
         print("\nStep 3: 최종 성능 지표 산출...")
         report = await intel_service.evaluate_offline(db)
         
+        # 4. 데이터 청소 (Cleanup)
+        print("\nStep 4: 가상 데이터 청소 및 원복...")
+        try:
+            # 시딩된 가상 유저 ID들 (PERSONAS 기반 생성된 것들) 삭제
+            from app.services.seed_virtual_interactions import PERSONAS
+            import uuid
+            virtual_user_ids = [uuid.uuid5(uuid.NAMESPACE_DNS, name) for name in PERSONAS.keys()]
+            
+            await db.execute(text("DELETE FROM interaction.likes WHERE user_id IN :ids"), {"ids": tuple(virtual_user_ids)})
+            
+            # 시딩된 가상 포스트들 삭제 (content_text의 'is_dummy' 플래그 활용하거나 전체 삭제 후 재동기화)
+            # 여기서는 안전하게 interaction 데이터만 날리고 포스트는 backfill로 관리하는 방식을 제안하지만,
+            # 유저님의 요청대로 '싹 비우기' 위해 가상 포스트들도 정리합니다.
+            await db.execute(text("DELETE FROM search.post_vectors WHERE content_text->>'is_dummy' = 'true'"))
+            await db.commit()
+            print("✅ Cleanup 완료: 가상 데이터가 성공적으로 제거되었습니다.")
+        except Exception as e:
+            print(f"⚠️ Cleanup 중 오류 발생: {e}")
+            await db.rollback()
+        
     duration = time.time() - start_time
     
     # 4. 보고서 출력
