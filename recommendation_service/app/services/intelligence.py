@@ -210,7 +210,7 @@ class UnifiedIntelligenceService:
         except Exception as e:
             logger.error(f"❌ Training failure: {e}", exc_info=True)
 
-    async def index_post(self, db: AsyncSession, post_id: uuid.UUID, caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray):
+    async def index_post(self, db: AsyncSession, post_id: uuid.UUID, caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray, metadata: Optional[Dict] = None):
         result = await db.execute(select(PostVector).where(PostVector.post_id == post_id))
         vector_obj = result.scalar_one_or_none()
         if not vector_obj:
@@ -220,6 +220,8 @@ class UnifiedIntelligenceService:
         vector_obj.caption_vector = caption_vec.tobytes()
         vector_obj.hashtag_vector = hashtag_vec.tobytes()
         vector_obj.image_vector = image_vec.tobytes()
+        if metadata:
+            vector_obj.content_text = metadata
         await db.commit()
 
         c_tensor = torch.tensor(caption_vec).unsqueeze(0).to(self.device)
@@ -260,7 +262,7 @@ class UnifiedIntelligenceService:
                                 if img_res.status_code == 200:
                                     i_vec = nlp_embedder.embed_image(img_res.content).cpu().numpy()
                             except: pass
-                        await self.index_post(db, post_id, c_vec, h_vec, i_vec)
+                        await self.index_post(db, post_id, c_vec, h_vec, i_vec, metadata={"caption": caption})
                     logger.info("✅ Backfill completed.")
                 except Exception as e:
                     logger.error(f"❌ Backfill failed: {e}")

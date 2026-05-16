@@ -75,7 +75,7 @@ async def consume_post_created():
 
                     # 3. 인덱싱 (MLP 투영 및 128차원 저장)
                     async with AsyncSessionLocal() as db:
-                        await intel_service.index_post(db, post_id, c_vec, h_vec, i_vec)
+                        await intel_service.index_post(db, post_id, c_vec, h_vec, i_vec, metadata={"caption": caption})
                         logger.info(f"✅ Multi-modal MLP indexing complete for {post_id}")
                         
             except Exception as e:
