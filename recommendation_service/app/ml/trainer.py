@@ -92,7 +92,17 @@ class UnifiedDiscoveryTrainer:
         # 6. Structural Loss: Similarity Preservation (공간 붕괴 방지 핵심)
         # 캡션 투영 레이어가 원본 텍스트의 의미 구조를 깨지 않도록 함
         projected_caps = F.normalize(self.model.caption_proj(target_items["caption"]), p=2, dim=-1)
-        loss_structure = self.similarity_preservation_loss(projected_caps, target_items["caption"])
+        loss_structure_c = self.similarity_preservation_loss(projected_caps, target_items["caption"])
+        
+        # 검색어 투영 레이어(query_proj)도 의미 구조가 깨지지 않도록 강제
+        projected_queries = F.normalize(self.model.query_proj(target_items["caption"]), p=2, dim=-1)
+        loss_structure_q = self.similarity_preservation_loss(projected_queries, target_items["caption"])
+        
+        # 6-2. 좌표계 동기화 (Coordinate Alignment)
+        # 동일한 SBERT 텍스트에 대해 query_proj와 caption_proj가 완벽히 일치하는 좌표계를 갖도록 강제
+        loss_coordinate_align = F.mse_loss(projected_queries, projected_caps)
+        
+        loss_structure = loss_structure_c + loss_structure_q + 2.0 * loss_coordinate_align
         
         # 7. Alignment Loss: Multi-modal (Text-Image)
         with torch.set_grad_enabled(True):
@@ -119,7 +129,6 @@ class UnifiedDiscoveryTrainer:
             loss_query_image = torch.tensor(0.0).to(user_histories.device)
         
         # Total Loss (텍스트를 Anchor로 삼아 이미지를 강력하게 정렬)
-        # loss_alignment 가중치를 높여 이미지가 텍스트 공간을 엄격하게 따르게 함
         total_loss = loss_discovery + 1.0 * loss_structure + 2.0 * loss_alignment + 1.0 * loss_query_item + 2.0 * loss_query_image
         
         total_loss.backward()

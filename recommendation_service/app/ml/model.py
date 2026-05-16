@@ -25,22 +25,35 @@ class UserTower(nn.Module):
         self.fc = nn.Linear(embed_dim, embed_dim)
         self.norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, x, mask=None):
-        # x: [Batch, Seq, 128]
-        # 1. Attention for feature importance
-        attn_output, _ = self.attention(x, x, x, key_padding_mask=mask)
+    def forward(self, x):
+        # x shape: [Batch, Seq, 128]
+        # 1. 0벡터(패딩)를 동적으로 감지하여 마스킹 처리 (L2 Norm이 1e-5 미만인 경우 패딩으로 판단)
+        norms = torch.norm(x, dim=-1) # [Batch, Seq]
+        mask = (norms < 1e-5) # [Batch, Seq] - 패딩된 위치는 True
         
-        # 2. Short-term preference (GRU)
+        # 모든 히스토리가 빈 경우(Cold-Start)를 대비해 안전장치 마련
+        all_padded = mask.all(dim=-1, keepdim=True)
+        safe_mask = mask.clone()
+        safe_mask[all_padded.expand_as(mask)] = False # 전체가 패딩이면 NaN 방지를 위해 마스킹을 임시로 끔
+        
+        # 2. 어텐션 레이어가 진짜 행동 정보에만 100% 집중하도록 패딩 마스크 적용
+        attn_output, _ = self.attention(x, x, x, key_padding_mask=safe_mask)
+        
+        # 3. GRU를 통한 단기 선호도 추출
         _, h_n = self.aggregation(attn_output)
         gru_vec = h_n.squeeze(0) # [Batch, 128]
         
-        # 3. Long-term preference (Residual Mean Pool)
-        # 정보 손실 방지를 위해 전체 시퀀스의 평균을 GRU 결과에 더해줌
-        mean_pool = torch.mean(x, dim=1) # [Batch, 128]
+        # 4. 진짜 행동들에 대해서만 평균(Mean Pool)을 구하여 희석 방지
+        active_mask = (~mask).float().unsqueeze(-1) # [Batch, Seq, 1]
+        active_count = active_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        mean_pool = (x * active_mask).sum(dim=1) / active_count.squeeze(-1) # [Batch, 128]
         
-        # 4. Final Aggregation
+        # 5. 최종 결합 및 레이어 정규화 (LayerNorm)
+        # 만약 완전히 빈 이력이라면 노이즈 폭발을 막기 위해 최종 유저 벡터를 0벡터로 밀어버립니다.
         user_vec = self.norm(self.fc(gru_vec + mean_pool))
-        return F.normalize(user_vec, p=2, dim=1)
+        normed_user_vec = F.normalize(user_vec, p=2, dim=1)
+        
+        return normed_user_vec * (~all_padded).float()
 
 class UnifiedDiscoveryModel(nn.Module):
     def __init__(self):
