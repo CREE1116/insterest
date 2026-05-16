@@ -265,7 +265,7 @@ class UnifiedIntelligenceService:
                 except Exception as e:
                     logger.error(f"❌ Backfill failed: {e}")
 
-    async def run_quantitative_benchmark(self, db: AsyncSession) -> Dict[str, Any]:
+    async def evaluate_offline(self, db: AsyncSession, k_list=[5, 10, 20]) -> Dict[str, Any]:
         """
         Recall@K, NDCG@K 지표를 정량적으로 계산합니다. (Data Leak 방지 적용)
         """
