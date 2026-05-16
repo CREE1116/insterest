@@ -29,7 +29,6 @@ jobs:
           - { name: 'user-service', path: 'user_service' }
           - { name: 'recommendation-service', path: 'recommendation_service' }
           - { name: 'frontend', path: 'frontend' }
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -62,3 +61,36 @@ jobs:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:latest, ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:${{ github.sha }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:buildcache
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:buildcache,mode=max
+
+  update-infra:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Infra Repo
+        uses: actions/checkout@v4
+        with:
+          repository: 'CREE1116/insterest-infra'
+          token: ${{ secrets.INFRA_REPO_PAT }}
+          path: 'infra'
+
+      - name: Update Kubernetes manifests
+        run: |
+          cd infra
+          
+          SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend")
+          
+          for service in "${SERVICES[@]}"; do
+            # Replace the image tag in deployment files with the new github.sha tag
+            find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: .*/?$service:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
+          done
+          
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git add .
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update image tags to ${{ github.sha }} (GitOps sync)"
+            git push
+          fi
