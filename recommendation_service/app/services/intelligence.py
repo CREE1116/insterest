@@ -287,32 +287,32 @@ class UnifiedIntelligenceService:
             if pid not in user_history[uid]: user_history[uid].append(pid)
         
         test_users = {uid: pids for uid, pids in user_history.items() if len(pids) >= 5}
-        if not test_users:
-            return {"status": "error", "message": "데이터 부족 (활동 5개 이상 유저 없음)"}
-
-        k_list = [10, 20, 50]
+        
+        k_list = [5, 10, 20]
         metrics = {k: {"recall": [], "ndcg": []} for k in k_list}
         
-        for user_id, pids in test_users.items():
-            # Leave-one-out: 마지막 아이템을 정답(target)으로 설정
-            target_id = pids[-1]
-            try:
-                # 1. 정답 아이템을 유저 히스토리에서 제외하고 추천 요청 (No Cheating)
-                reco_ids = await self.discover(db, user_id=user_id, limit=50, exclude_history_ids=[target_id])
-                
-                for k in k_list:
-                    top_k = reco_ids[:k]
-                    # Recall
-                    hit = 1.0 if str(target_id) in top_k else 0.0
-                    metrics[k]["recall"].append(hit)
-                    # NDCG
-                    if str(target_id) in top_k:
-                        rank = top_k.index(str(target_id)) + 1
-                        metrics[k]["ndcg"].append(1.0 / np.log2(rank + 1))
-                    else:
-                        metrics[k]["ndcg"].append(0.0)
-            except Exception as e:
-                logger.error(f"Benchmark error: {e}")
+        # 3. Recommendation Quality (Optional if users exist)
+        if test_users:
+            for user_id, pids in test_users.items():
+                # Leave-one-out: 마지막 아이템을 정답(target)으로 설정
+                target_id = pids[-1]
+                try:
+                    # 1. 정답 아이템을 유저 히스토리에서 제외하고 추천 요청 (No Cheating)
+                    reco_ids = await self.discover(db, user_id=user_id, limit=50, exclude_history_ids=[target_id])
+                    
+                    for k in k_list:
+                        top_k = [r["id"] for r in reco_ids[:k]]
+                        # Recall
+                        hit = 1.0 if str(target_id) in top_k else 0.0
+                        metrics[k]["recall"].append(hit)
+                        # NDCG
+                        if str(target_id) in top_k:
+                            rank = top_k.index(str(target_id)) + 1
+                            metrics[k]["ndcg"].append(1.0 / np.log2(rank + 1))
+                        else:
+                            metrics[k]["ndcg"].append(0.0)
+                except Exception as e:
+                    logger.error(f"Benchmark error: {e}")
 
         # 4. Self-Retrieval Fidelity (Search Accuracy)
         # 캡션을 검색어로 던졌을 때 본인이 나오는지 측정
