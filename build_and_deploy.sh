@@ -1,5 +1,5 @@
 #!/bin/bash
-TAG=${1:-"v32"}
+TAG=${1:-"v1"}
 CLUSTER_NAME="desktop"
 echo "🚀 Starting Robust Interest MSA Deployment (Tag: $TAG)..."
 
