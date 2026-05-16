@@ -70,6 +70,23 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Check which services changed
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            auth-service: 'auth_service/**'
+            upload-service: 'upload_service/**'
+            generation-service: 'generation_service/**'
+            interaction-service: 'interaction_service/**'
+            comment-service: 'comment_service/**'
+            user-service: 'user_service/**'
+            recommendation-service: 'recommendation_service/**'
+            frontend: 'frontend/**'
+
       - name: Checkout Infra Repo
         uses: actions/checkout@v4
         with:
@@ -84,8 +101,13 @@ jobs:
           SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend")
           
           for service in "${SERVICES[@]}"; do
-            # Replace the image tag in deployment files with the new github.sha tag
-            find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: .*/?$service:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
+            # Only update if the service changed or it's a manual forced run
+            if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "${{ steps.filter.outputs[service] }}" == "true" ]]; then
+              echo "Updating tag for $service..."
+              find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: .*/?$service:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
+            else
+              echo "Skipping $service (no changes)."
+            fi
           done
           
           git config --global user.name "GitHub Actions Bot"
@@ -95,6 +117,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore: update image tags to ${{ github.sha }} (GitOps sync)"
+            git commit -m "chore: update image tags for changed services (GitOps sync)"
             git push
           fi
