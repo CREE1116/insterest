@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     # Gemini API Key (Required)
     GEMINI_API_KEY: str = ""
     
+    # Hugging Face Token (Optional but recommended for higher limits)
+    HF_TOKEN: Optional[str] = None
+    
     # Upload Service URL (for integration)
     UPLOAD_SERVICE_URL: str = "http://upload-service:8001"
     

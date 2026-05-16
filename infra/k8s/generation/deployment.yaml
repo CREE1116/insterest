@@ -2,9 +2,11 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: generation-secrets
+  annotations:
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
 type: Opaque
 stringData:
-  GEMINI_API_KEY: "AIzaSyBAP8OqirwAQ9fLSsyV9ytwxb4i1dpT550"
+  GEMINI_API_KEY: "${GEMINI_API_KEY}"
 ---
 apiVersion: v1
 kind: Service

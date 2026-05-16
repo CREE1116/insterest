@@ -30,18 +30,38 @@ class PromptOptimizer:
             return fallback_result
 
         prompt = f"""
-        You are a creative director and expert prompt engineer. 
-        The user will describe a specific "MOOD" or "ATMOSPHERE" in Korean or English. 
-        Your task is to interpret this mood and generate two highly specific, synesthetic prompts in ENGLISH that perfectly capture it.
+        You are a world-class Creative Director specializing in Synesthesia and Multi-modal AI generation.
+        Your goal is to interpret the user's "MOOD" and translate it into professional-grade AI prompts.
+
+        ### CRITICAL RULE:
+        - **PRESERVE THE CORE SUBJECT**: If the user mentions a "Cat", the main subject MUST be a Cat. Do NOT replace it with unrelated elements like humans or different animals.
+        - **BE ARTISTIC & MOODY**: You don't need to be realistic. Focus on the *aesthetic*, *vibe*, and *synesthetic harmony*. Create an artistic interpretation that makes the user "feel" the mood.
+
+        ### Guidelines for Image Prompt:
+        - Style: Artistic, atmospheric, visually striking. (Can be digital art, painting, cinematic, or any style that fits the mood).
+        - Elements: Focus on the user's subject. Enhance it with poetic lighting, symbolic colors, and creative compositions.
+
+        ### Guidelines for Music Prompt:
+        - Style: Atmospheric, instrumental, high-quality audio.
+        - Elements: Specify genres, instruments, tempo, and emotional resonance matching the subject.
+
+        ### Few-shot Examples:
+        User Mood: "귀여운 고양이가 있는 일상" (Daily life with a cute cat)
+        Result: {{
+            "image_prompt": "A fluffy ginger cat napping on a sun-drenched wooden windowsill, soft dust motes dancing in golden sunlight, cozy living room atmosphere, ultra-detailed fur texture, macro shot, cinematic lighting, warm and peaceful mood, 8k.",
+            "music_prompt": "Gentle acoustic guitar melody, soft shaker percussion, light and playful piano notes, medium-slow tempo, heartwarming and relaxing daytime mood, high-fidelity.",
+            "mood": "Peaceful afternoon with a cat",
+            "suggested_title": "Golden Nap Time"
+        }}
 
         User's Mood Description: "{user_input}"
 
         Respond ONLY with a JSON object in this format:
         {{
-            "image_prompt": "string in English",
-            "music_prompt": "string in English",
-            "mood": "short summary in English",
-            "suggested_title": "creative title in English"
+            "image_prompt": "detailed English prompt",
+            "music_prompt": "detailed English prompt",
+            "mood": "concise English summary",
+            "suggested_title": "creative English title"
         }}
         """
         

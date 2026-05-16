@@ -115,19 +115,17 @@ async def websocket_generate(websocket: WebSocket):
     global _content_generator
     
     try:
-        # 2. 모델이 로딩되지 않았다면 로딩을 기다리며 상태를 보냅니다.
+        # 2. 모델 로딩이 필요 없으므로 바로 준비 완료 상태를 보냅니다.
         if _content_generator is None:
-            await websocket.send_json({"status": "loading", "message": "📥 AI 모델 초기화 중...", "progress": 10})
-            if not any(t.name == "load_generator" for t in threading.enumerate()):
-                threading.Thread(target=load_generator_sync, name="load_generator").start()
-            while _content_generator is None:
-                await asyncio.sleep(1)
+            load_generator_sync()
         
         await websocket.send_json({"status": "ready", "message": "✅ 준비 완료!", "progress": 25})
 
         # 3. 이미 데이터를 받았으므로 바로 생성을 시작합니다.
         async with generation_lock:
             await websocket.send_json({"status": "analyzing", "message": "🤖 무드 해석 중...", "progress": 40})
+            optimized = await prompt_optimizer.optimize(user_input)
+            
             include_music = request.get("include_music", True)
             status_msg = "🎨 이미지와 🎵 음악 생성 중..." if include_music else "🎨 이미지 생성 중..."
             await websocket.send_json({"status": "generating", "message": status_msg, "progress": 60})

@@ -96,24 +96,33 @@ jobs:
           path: 'infra-repo'
 
       - name: Update Kubernetes manifests
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          # Clean old manifests in the infra repo to prevent ghost deployments
+          # Clean old manifests in the infra repo
           rm -rf infra-repo/k8s/*
           mkdir -p infra-repo/k8s
           
-          # Copy all manifests from main repo (infra/k8s/) to infra repo (infra-repo/k8s/)
+          # Copy all manifests from main repo to infra repo
           cp -r infra/k8s/* infra-repo/k8s/
+          
+          # Inject Secrets into the generation deployment using envsubst
+          if [ -n "$GEMINI_API_KEY" ]; then
+            echo "Injecting GEMINI_API_KEY into manifests..."
+            envsubst '${GEMINI_API_KEY}' < infra/k8s/generation/deployment.yaml > infra-repo/k8s/generation/deployment.yaml
+          else
+            echo "Warning: GEMINI_API_KEY secret is not set!"
+          fi
           
           cd infra-repo
           
-          # Get the list of changed services as a JSON array from paths-filter
+          # Get the list of changed services
           CHANGES='${{ steps.filter.outputs.changes }}'
           echo "Changes detected: $CHANGES"
           
           SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend")
           
           for service in "${SERVICES[@]}"; do
-            # Check if service is in the CHANGES array or if it's a manual run
             IS_CHANGED=$(echo "$CHANGES" | jq -r ".[] | select(. == \"$service\")")
             
             if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ -n "$IS_CHANGED" ]]; then
