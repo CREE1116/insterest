@@ -110,7 +110,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: public.ecr.aws/docker/library/postgres:16.6-alpine
+        image: public.ecr.aws/docker/library/postgres:16.6-alpine3.20
         imagePullPolicy: Always
         args: ["-c", "max_connections=500", "-c", "shared_buffers=512MB"]
         resources:

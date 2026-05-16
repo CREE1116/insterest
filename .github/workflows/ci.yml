@@ -68,6 +68,7 @@ jobs:
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:buildcache,mode=max
 
   update-infra:
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
