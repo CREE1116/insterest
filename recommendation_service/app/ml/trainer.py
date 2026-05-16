@@ -83,37 +83,25 @@ class UnifiedDiscoveryTrainer:
         4. query_proj도 caption_proj와 동일 공간을 갖도록 강제 (검색 일관성)
         """
         self.model.train()
-        # Phase 1: 아이템 타워 + query_proj 업데이트, user_tower 동결
         self._set_item_tower_grad(True)
         self._set_user_query_grad(False)
-        # query_proj는 Phase 1에서도 같이 정렬
-        for p in self.model.query_proj.parameters():
-            p.requires_grad = True
 
         self.item_optimizer.zero_grad()
 
-        # --- 텍스트 앵커: 캡션과 해시태그의 평균 ---
-        c_emb = F.normalize(self.model.caption_proj(caption_vecs), p=2, dim=-1)
-        h_emb = F.normalize(self.model.hashtag_proj(hashtag_vecs), p=2, dim=-1)
-        text_anchor = F.normalize(c_emb + h_emb, p=2, dim=-1)  # [B, 128]
-
-        # --- 이미지 투영 ---
-        i_emb = F.normalize(self.model.image_proj(image_vecs), p=2, dim=-1)  # [B, 128]
-
-        # Loss 1: 이미지 → 텍스트 앵커 정렬 (CLIP-style InfoNCE)
-        if text_anchor.size(0) > 1:
-            logits_i2t = torch.matmul(i_emb, text_anchor.detach().T) / self.temperature
-            logits_t2i = torch.matmul(text_anchor, i_emb.detach().T) / self.temperature
-            labels = torch.arange(text_anchor.size(0), device=self.device)
-            loss_clip = (self.criterion(logits_i2t, labels) + self.criterion(logits_t2i, labels)) / 2.0
-        else:
-            loss_clip = torch.tensor(0.0, device=self.device)
-
-        # Loss 2: text_proj 공간이 SBERT 의미 구조를 보존 (고양이≈강아지 상대 거리 유지)
-        # query와 caption이 같은 레이어를 쓰므로 한 번만 적용하면 됨
+        # text_proj 공간이 SBERT 원본의 의미 구조를 보존하도록 강제
+        # (고양이들끼리 가깝고, 강아지는 멀리 — SBERT가 이미 알고 있는 관계를 128차원에 이식)
+        c_emb = F.normalize(self.model.text_proj(caption_vecs), p=2, dim=-1)
         loss_struct = self.similarity_preservation_loss(c_emb, caption_vecs)
 
-        total_loss = loss_clip + loss_struct
+        # 해시태그도 text_proj 공간 구조 보존
+        h_emb = F.normalize(self.model.hashtag_proj(hashtag_vecs), p=2, dim=-1)
+        loss_struct_h = self.similarity_preservation_loss(h_emb, hashtag_vecs)
+
+        # 이미지 투영을 텍스트 공간으로 당기되, 이미지 벡터가 유의미할 때만 적용
+        i_emb = F.normalize(self.model.image_proj(image_vecs), p=2, dim=-1)
+        loss_img = self.similarity_preservation_loss(i_emb, F.normalize(image_vecs, p=2, dim=-1))
+
+        total_loss = loss_struct + 0.5 * loss_struct_h + 0.3 * loss_img
         total_loss.backward()
         self.item_optimizer.step()
         return total_loss.item()
