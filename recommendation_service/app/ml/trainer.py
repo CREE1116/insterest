@@ -56,13 +56,16 @@ class UnifiedDiscoveryTrainer:
     def similarity_preservation_loss(self, projected_vecs: torch.Tensor, raw_vecs: torch.Tensor):
         """
         원본 SBERT 공간의 상대적 유사도 구조를 128차원에서도 보존.
-        (고양이-강아지 관계가 128차원에서도 유지됨)
+        projected_vecs는 반드시 L2 normalize된 상태여야 함.
         """
         if projected_vecs.size(0) < 2:
             return torch.tensor(0.0, device=projected_vecs.device)
+        # Teacher: SBERT 원본 유사도 행렬
         raw_norm = F.normalize(raw_vecs, p=2, dim=-1)
         teacher_sim = torch.matmul(raw_norm, raw_norm.T)
-        student_sim = torch.matmul(projected_vecs, projected_vecs.T)
+        # Student: 투영 공간 유사도 행렬 (projected_vecs는 이미 L2 normalize 상태)
+        proj_norm = F.normalize(projected_vecs, p=2, dim=-1)
+        student_sim = torch.matmul(proj_norm, proj_norm.T)
         return F.mse_loss(student_sim, teacher_sim.detach())
 
     # ──────────────────────────────────────────────────────────
@@ -118,7 +121,7 @@ class UnifiedDiscoveryTrainer:
         loss_struct_q = self.similarity_preservation_loss(q_emb, caption_vecs)
         loss_q_c_align = F.mse_loss(q_emb, c_emb.detach())  # query 공간 = caption 공간
 
-        total_loss = loss_clip + loss_struct_c + loss_struct_q + 2.0 * loss_q_c_align
+        total_loss = loss_clip + loss_struct_c + loss_struct_q + 0.5 * loss_q_c_align
         total_loss.backward()
         self.item_optimizer.step()
         return total_loss.item()
