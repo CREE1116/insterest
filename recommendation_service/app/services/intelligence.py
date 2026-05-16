@@ -43,21 +43,44 @@ class UnifiedIntelligenceService:
                 target_vec_np = nlp_embedder.embed_text(query_text).cpu().numpy()
 
             # 2. 개인화 추천 (유저 ID 있는 경우)
+            user_vec = None
             if user_id and use_personalization:
                 # 유저 히스토리 로드
                 stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at DESC LIMIT 10")
                 res = await db.execute(stmt, {"uid": user_id})
                 history_ids = [row[0] for row in res.all()]
                 
-                # 히스토리 기반 벡터 검색
-                # (간소화: 마지막 아이템 혹은 평균 벡터 사용 가능)
-                # 여기서는 순수 시맨틱 검색 엔진으로 작동하도록 final_ids 구성
-                pass
+                if history_ids:
+                    # 히스토리 임베딩 구성
+                    hist_embs = []
+                    res = await db.execute(select(PostVector).where(PostVector.post_id.in_(history_ids)))
+                    p_vectors = {v.post_id: v for v in res.scalars().all()}
+                    
+                    with torch.no_grad():
+                        for h_id in history_ids:
+                            if h_id in p_vectors:
+                                v = p_vectors[h_id]
+                                c = torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                t = torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
+                        
+                        if hist_embs:
+                            while len(hist_embs) < 10: hist_embs.insert(0, torch.zeros(128).to(self.device))
+                            u_hist = torch.stack(hist_embs).unsqueeze(0)
+                            user_vec = self.model.get_user_embedding(u_hist).squeeze(0).cpu().numpy()
 
-            # 3. 벡터 검색 실행 (Redis/Postgres KNN)
-            if target_vec_np is not None:
-                # (실제 환경에서는 Redis Vector Store 사용)
-                # 여기서는 DB에서 가져와서 거리 계산 (샘플용)
+            # 3. 벡터 검색 실행 (Fusion Search)
+            # 검색어 벡터(target_vec_np)와 유저 취향 벡터(user_vec)를 결합
+            query_vec = None
+            if target_vec_np is not None and user_vec is not None:
+                query_vec = 0.5 * target_vec_np + 0.5 * user_vec # Fusion
+            elif target_vec_np is not None:
+                query_vec = target_vec_np
+            elif user_vec is not None:
+                query_vec = user_vec
+
+            if query_vec is not None:
                 res = await db.execute(select(PostVector))
                 all_posts = res.scalars().all()
                 
@@ -65,7 +88,8 @@ class UnifiedIntelligenceService:
                 for p in all_posts:
                     if exclude_history_ids and p.post_id in exclude_history_ids: continue
                     p_vec = np.frombuffer(p.caption_vector, dtype=np.float32)
-                    score = np.dot(target_vec_np, p_vec) / (np.linalg.norm(target_vec_np) * np.linalg.norm(p_vec) + 1e-9)
+                    # 코사인 유사도
+                    score = np.dot(query_vec, p_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(p_vec) + 1e-9)
                     scored.append({"id": p.post_id, "score": float(score), "caption": p.content_text.get("caption", "")})
                 
                 scored.sort(key=lambda x: x["score"], reverse=True)
