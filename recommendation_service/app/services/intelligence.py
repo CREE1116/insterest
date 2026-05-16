@@ -30,8 +30,6 @@ class UnifiedIntelligenceService:
         
         # Load weights if exist
         self.trainer.load_model(settings.MODEL_SAVE_PATH)
-        # Phase 2(UserTower) 학습 완료 여부 — False면 단순 평균 풀링 사용
-        self.user_tower_trained = False
 
     async def discover(self, db: AsyncSession, query_text: str = None, user_id: uuid.UUID = None,
                        limit: int = 20, skip: int = 0, use_personalization: bool = True,
@@ -74,17 +72,18 @@ class UnifiedIntelligenceService:
                                 hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
 
                         if hist_embs:
-                            stacked = torch.stack(hist_embs)  # [N, 128]
-                            if self.user_tower_trained:
-                                # Phase 2 학습 완료: Attention+GRU UserTower 사용
-                                while stacked.size(0) < 10:
-                                    pad = torch.zeros(128, device=self.device)
-                                    stacked = torch.cat([pad.unsqueeze(0), stacked], dim=0)
-                                user_vec = self.model.get_user_embedding(stacked.unsqueeze(0)).squeeze(0).cpu().numpy()
-                            else:
-                                # Phase 2 미학습: 단순 평균 풀링 (신뢰할 수 없는 GRU 우회)
-                                user_vec_t = stacked.mean(dim=0)
-                                user_vec = torch.nn.functional.normalize(user_vec_t, p=2, dim=-1).cpu().numpy()
+                            # 시간 감쇄 가중 풀링
+                            # history_ids는 ASC(오래된 순), 마지막 원소가 최신 좋아요
+                            # weight[i] = 0.5^(N-1-i) → 최신일수록 2배씩 높은 가중치
+                            n = len(hist_embs)
+                            weights = torch.tensor(
+                                [0.5 ** (n - 1 - i) for i in range(n)],
+                                dtype=torch.float32, device=self.device
+                            )
+                            weights = weights / weights.sum()
+                            stacked = torch.stack(hist_embs)           # [N, 128]
+                            user_vec_t = (stacked * weights.unsqueeze(1)).sum(dim=0)
+                            user_vec = torch.nn.functional.normalize(user_vec_t, p=2, dim=-1).cpu().numpy()
 
             # 3. 검색 vs 추천 분리
             if query_vec_128 is not None and user_vec is None:
@@ -286,7 +285,6 @@ class UnifiedIntelligenceService:
                         logger.info(f"  [Phase2] Epoch {epoch+1}/{PHASE2_EPOCHS} loss={total_loss:.4f}")
 
                 logger.info("✅ [Phase 2] User/Query Tower training complete.")
-                self.user_tower_trained = True  # 이제 UserTower 신뢰 가능
 
             else:
                 logger.info("ℹ️ [Phase 2] Skipped (not enough likes data — search only mode)")
