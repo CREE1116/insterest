@@ -57,13 +57,49 @@ class UnifiedDiscoveryTrainer:
         """
         if projected_vecs.size(0) < 2:
             return torch.tensor(0.0, device=projected_vecs.device)
-        # Teacher: SBERT 원본 유사도 행렬
         raw_norm = F.normalize(raw_vecs, p=2, dim=-1)
         teacher_sim = torch.matmul(raw_norm, raw_norm.T)
-        # Student: 투영 공간 유사도 행렬 (projected_vecs는 이미 L2 normalize 상태)
         proj_norm = F.normalize(projected_vecs, p=2, dim=-1)
         student_sim = torch.matmul(proj_norm, proj_norm.T)
         return F.mse_loss(student_sim, teacher_sim.detach())
+
+    def soft_clip_loss(
+        self,
+        t_emb: torch.Tensor,      # [B, 128] L2-normalized text embeddings
+        i_emb: torch.Tensor,      # [B, 128] L2-normalized image embeddings
+        caption_vecs: torch.Tensor # [B, 768] raw SBERT vectors (for soft labels)
+    ):
+        """
+        Soft CLIP: SBERT 유사도를 Soft Label로 쓰는 양방향 Contrastive Loss
+
+        Hard CLIP 문제: 배치 내 유사 포스트(고양이1, 고양이2)가 서로 Negative로 취급
+        Soft CLIP 해결: SBERT 유사도에 비례한 Partial Positive → False Negative 제거
+
+        loss_i2t: image → text 방향 (image_proj 업데이트)
+        loss_t2i: text → image 방향 (text_proj 업데이트, 낮은 가중치)
+        """
+        B = t_emb.size(0)
+        if B < 2:
+            return torch.tensor(0.0, device=t_emb.device)
+
+        # Teacher: SBERT 원본 코사인 유사도 → Soft Label 분포
+        # temperature_teacher=0.07: 유사한 것에 더 날카롭게 집중
+        raw_norm = F.normalize(caption_vecs, p=2, dim=-1)
+        teacher_sim = torch.matmul(raw_norm, raw_norm.T)  # [B, B], [-1, 1]
+        soft_labels = F.softmax(teacher_sim / 0.07, dim=-1).detach()  # [B, B]
+
+        # Student: text-image cross-modal logits
+        logits_i2t = torch.matmul(i_emb, t_emb.T) / self.temperature  # [B, B]
+        logits_t2i = torch.matmul(t_emb, i_emb.T) / self.temperature  # [B, B]
+
+        # KL divergence: student 분포가 soft label 분포를 따르도록
+        loss_i2t = F.kl_div(
+            F.log_softmax(logits_i2t, dim=-1), soft_labels, reduction='batchmean'
+        )
+        loss_t2i = F.kl_div(
+            F.log_softmax(logits_t2i, dim=-1), soft_labels, reduction='batchmean'
+        )
+        return loss_i2t, loss_t2i
 
     # ──────────────────────────────────────────────────────────
     # Phase 1: 아이템 타워 학습
@@ -84,19 +120,24 @@ class UnifiedDiscoveryTrainer:
         self.model.train()
         self._set_item_tower_grad(True)
         self._set_user_query_grad(False)
-
         self.item_optimizer.zero_grad()
 
-        # 텍스트 투영: SBERT 원본 의미 구조를 128차원에 보존
+        # 텍스트 투영 (L2 normalize)
         c_emb = F.normalize(self.model.text_proj(caption_vecs), p=2, dim=-1)
+        # 이미지 투영 (L2 normalize)
+        i_emb = F.normalize(self.model.image_proj(image_vecs), p=2, dim=-1)
+
+        # Loss 1: text_proj → SBERT 의미 구조 보존
         loss_struct = self.similarity_preservation_loss(c_emb, caption_vecs)
 
-        # 이미지 투영: 텍스트 벡터를 anchor로 삼아 이미지가 텍스트 공간으로 따라오도록
-        # c_emb.detach() → 텍스트 쪽 그래디언트는 끊음, 오직 image_proj만 업데이트
-        i_emb = F.normalize(self.model.image_proj(image_vecs), p=2, dim=-1)
-        loss_img_align = F.mse_loss(i_emb, c_emb.detach())
+        # Loss 2: Soft CLIP — 텍스트 ↔ 이미지 양방향 수렴
+        #   loss_i2t: image_proj 가 텍스트 공간을 배움 (주 방향)
+        #   loss_t2i: text_proj 가 이미지 정보를 반영 (보조, 낮은 가중치)
+        loss_i2t, loss_t2i = self.soft_clip_loss(c_emb, i_emb, caption_vecs)
 
-        total_loss = loss_struct + 0.5 * loss_img_align
+        # text_proj는 similarity_preservation이 주 목표
+        # → t2i 가중치(0.2)를 낮게 유지해 SBERT 구조가 무너지지 않도록 보호
+        total_loss = loss_struct + loss_i2t + 0.2 * loss_t2i
         total_loss.backward()
         self.item_optimizer.step()
         return total_loss.item()
