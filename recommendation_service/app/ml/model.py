@@ -59,14 +59,14 @@ class UnifiedDiscoveryModel(nn.Module):
     def __init__(self):
         super(UnifiedDiscoveryModel, self).__init__()
         
-        # 검색어와 아이템 캡션이 동일한 레이어를 공유 → 항상 같은 공간 보장
+        # 검색어·캡션·해시태그 모두 같은 텍스트 레이어 공유
+        # (해시태그도 텍스트이므로 같은 의미 공간에 투영)
         self.text_proj = MLPProjection(768, 128)
-        self.hashtag_proj = MLPProjection(768, 128)
         self.image_proj = MLPProjection(512, 128)
         
-        # Fusion MLP (384 -> 128)
+        # Fusion MLP (256 -> 128): text + image 두 모달
         self.fusion_mlp = nn.Sequential(
-            nn.Linear(128 * 3, 256),
+            nn.Linear(128 * 2, 256),
             nn.ReLU(),
             nn.Linear(256, 128),
             nn.LayerNorm(128)
@@ -76,20 +76,25 @@ class UnifiedDiscoveryModel(nn.Module):
 
     def get_multimodal_item_embedding(self, caption_vec, hashtag_vec, image_vec):
         """
-        캡션은 text_proj (쿼리와 동일 레이어) 사용 → 검색어-아이템 공간 일치 보장
+        캡션·해시태그 → text_proj (공유, L2 norm 후 평균)
+        이미지      → image_proj
+        fusion_mlp([text_fused, i_emb]) + 50% text 정체성 보존
         """
         def safe_proj(proj_layer, vec):
             mask = (torch.norm(vec, dim=-1, keepdim=True) > 1e-6).float()
             projected = proj_layer(vec)
             return F.normalize(projected * mask, p=2, dim=-1) * mask
 
-        c_emb = safe_proj(self.text_proj, caption_vec)    # 쿼리와 같은 레이어!
-        h_emb = safe_proj(self.hashtag_proj, hashtag_vec)
-        i_emb = safe_proj(self.image_proj, image_vec)
-        
-        combined = torch.cat([c_emb, h_emb, i_emb], dim=-1)
+        c_emb = safe_proj(self.text_proj, caption_vec)    # 캡션
+        h_emb = safe_proj(self.text_proj, hashtag_vec)    # 해시태그 (같은 레이어)
+        i_emb = safe_proj(self.image_proj, image_vec)     # 이미지
+
+        # 캡션·해시태그 평균 → 단일 텍스트 표현
+        text_fused = F.normalize(c_emb + h_emb, p=2, dim=-1)
+
+        combined = torch.cat([text_fused, i_emb], dim=-1)  # [B, 256]
         fused = F.normalize(self.fusion_mlp(combined), p=2, dim=-1)
-        
+
         # 텍스트 정체성(50%) + 멀티모달 문맥(50%)
         final_emb = 0.5 * fused + 0.5 * c_emb
         return F.normalize(final_emb, p=2, dim=-1)

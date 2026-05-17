@@ -25,7 +25,6 @@ class UnifiedDiscoveryTrainer:
         # 아이템 타워 파라미터 (Phase 1에서만 업데이트)
         self.item_tower_params = (
             list(model.text_proj.parameters()) +
-            list(model.hashtag_proj.parameters()) +
             list(model.image_proj.parameters()) +
             list(model.fusion_mlp.parameters())
         )
