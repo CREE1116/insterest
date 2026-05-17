@@ -346,10 +346,10 @@ class UnifiedIntelligenceService:
 
             # 3. 검색 신뢰도 측정 (Self-Retrieval)
             search_metrics = {k: {"recall": [], "ndcg": []} for k in k_list}
-            res = await db.execute(select(PostVector).limit(50))
-            for post in res.scalars().all():
+            res = await db.execute(select(PostVector))
+            search_posts = [p for p in res.scalars().all() if (p.content_text or {}).get("caption")]
+            for post in search_posts:
                 caption = (post.content_text or {}).get("caption", "")
-                if not caption: continue
                 results = await self.discover(db, query_text=caption, limit=50, use_personalization=False)
                 top_ids = [str(r["id"]) for r in results]
                 for k in k_list:
