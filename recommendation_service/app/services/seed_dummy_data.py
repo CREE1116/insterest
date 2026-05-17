@@ -24,8 +24,8 @@ THEMES = {
 def generate_100_posts():
     posts = []
     for theme, (subjects, adjectives) in THEMES.items():
-        # 각 테마당 약 12개씩 생성 (10개 테마 * 12 = 120개)
-        for _ in range(12):
+        # 각 테마당 20개 생성 (10개 테마 * 20 = 200개)
+        for _ in range(20):
             sub = random.choice(subjects)
             adj = random.choice(adjectives)
             caption = f"{adj} {sub} 풍경 ✨" if theme != "Pet" else f"{adj} {sub} 🐾"
