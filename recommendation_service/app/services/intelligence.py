@@ -98,7 +98,9 @@ class UnifiedIntelligenceService:
             # RRF 병합
             exclude_set = set(str(i) for i in (exclude_history_ids or []))
             if rank_lists:
-                rrf_scores = {}
+                # DB validity check 제거: asyncpg가 UUID list를 ANY(:pids)로 못 받음.
+                # Redis는 post 삭제 시 remove_post()로 정리됨 → 신뢰 가능.
+                rrf_scores: Dict[str, float] = {}
                 k_rrf = 60
                 for r_list in rank_lists:
                     for rank, pid in enumerate(r_list):
@@ -107,15 +109,34 @@ class UnifiedIntelligenceService:
                         rrf_scores[pid] = rrf_scores.get(pid, 0.0) + 1.0 / (k_rrf + (rank + 1))
 
                 sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+                # 부족하면 trending으로 패딩 (필요한 수만큼 정확히 가져옴, COALESCE로 NULL 방어)
+                needed = skip + limit - len(sorted_items)
+                if needed > 0:
+                    existing_ids = {pid for pid, _ in sorted_items} | exclude_set
+                    pad_stmt = text("""
+                        SELECT id FROM upload.post
+                        WHERE is_deleted = FALSE
+                        ORDER BY COALESCE(like_count, 0) * 0.7 + COALESCE(view_count, 0) * 0.3 DESC,
+                                 created_at DESC
+                        LIMIT :lim
+                    """)
+                    pad_res = await db.execute(pad_stmt, {"lim": needed + len(existing_ids) + 20})
+                    for row in pad_res.all():
+                        pid = str(row[0])
+                        if pid not in existing_ids:
+                            sorted_items.append((pid, 0.0))
+                            existing_ids.add(pid)
+
                 page = sorted_items[skip: skip + limit]
                 return [{"id": pid, "score": float(score)} for pid, score in page]
 
-            # Fallback: 인기도 × 시간감쇠 트렌딩
+            # Fallback: 쿼리도 유저도 없는 경우 → 트렌딩 (COALESCE로 NULL 방어)
             stmt = text("""
                 SELECT id FROM upload.post
                 WHERE is_deleted = FALSE
-                ORDER BY (like_count * 0.7 + view_count * 0.3)
-                         / POWER(1.0 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0, 1.2) DESC
+                ORDER BY COALESCE(like_count, 0) * 0.7 + COALESCE(view_count, 0) * 0.3 DESC,
+                         created_at DESC
                 LIMIT :l OFFSET :s
             """)
             res = await db.execute(stmt, {"l": limit, "s": skip})
@@ -146,8 +167,8 @@ class UnifiedIntelligenceService:
 
             rank_lists = []
 
-            # 1. 이미지 검색 랭킹
-            img_ids = vector_store.search_knn(img_norm, k=k_search, vector_field="vector")
+            # 1. 이미지 검색 랭킹 (pure image_vector 사용으로 시각 유사성 정확도 극대화)
+            img_ids = vector_store.search_knn(img_norm, k=k_search, vector_field="image_vector")
             rank_lists.append([str(pid) for pid in img_ids])
 
             # 2. 개인화 랭킹 (UserTower)
@@ -189,9 +210,9 @@ class UnifiedIntelligenceService:
                 user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector")
                 rank_lists.append([str(pid) for pid in user_ids])
 
-            # RRF 병합
+            # RRF 병합 (DB validity check 제거 — asyncpg UUID array 타입 불일치 버그)
             exclude_set = set(str(i) for i in (exclude_history_ids or []))
-            rrf_scores = {}
+            rrf_scores: Dict[str, float] = {}
             k_rrf = 60
             for r_list in rank_lists:
                 for rank, pid in enumerate(r_list):
@@ -200,6 +221,24 @@ class UnifiedIntelligenceService:
                     rrf_scores[pid] = rrf_scores.get(pid, 0.0) + 1.0 / (k_rrf + (rank + 1))
 
             sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+            needed = skip + limit - len(sorted_items)
+            if needed > 0:
+                existing_ids = {pid for pid, _ in sorted_items} | exclude_set
+                pad_stmt = text("""
+                    SELECT id FROM upload.post
+                    WHERE is_deleted = FALSE
+                    ORDER BY COALESCE(like_count, 0) * 0.7 + COALESCE(view_count, 0) * 0.3 DESC,
+                             created_at DESC
+                    LIMIT :lim
+                """)
+                pad_res = await db.execute(pad_stmt, {"lim": needed + len(existing_ids) + 20})
+                for row in pad_res.all():
+                    pid = str(row[0])
+                    if pid not in existing_ids:
+                        sorted_items.append((pid, 0.0))
+                        existing_ids.add(pid)
+
             page = sorted_items[skip: skip + limit]
             return [{"id": pid, "score": float(score)} for pid, score in page]
 
@@ -250,7 +289,7 @@ class UnifiedIntelligenceService:
             else:
                 sbert_vec = np.zeros(768, dtype=np.float32)
 
-            vector_store.upsert_vector(str(post_id), p_vec, text_vector=sbert_vec, metadata=metadata)
+            vector_store.upsert_vector(str(post_id), p_vec, text_vector=sbert_vec, image_vector=image_vec, metadata=metadata)
 
         except Exception as e:
             logger.error(f"❌ Indexing failed for {post_id}: {e}")
@@ -308,7 +347,8 @@ class UnifiedIntelligenceService:
                     else:
                         sbert_vec = np.zeros(768, dtype=np.float32)
 
-                    vector_store.upsert_vector(str(p.post_id), p_vec, text_vector=sbert_vec, metadata=p.content_text)
+                    img_vec = np.frombuffer(img_bytes, dtype=np.float32).copy()
+                    vector_store.upsert_vector(str(p.post_id), p_vec, text_vector=sbert_vec, image_vector=img_vec, metadata=p.content_text)
                     count += 1
                 except Exception as e:
                     logger.error(f"❌ Backfill failed for {p.post_id}: {e}")
