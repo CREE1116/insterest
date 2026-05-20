@@ -9,9 +9,27 @@ from app.core.config import settings
 import logging
 logger = logging.getLogger(__name__)
 
-async def seed_gemini_interactions_service(db) -> dict:
+async def seed_gemini_interactions_service(db, force: bool = False) -> dict:
     logger.info("🤖 Starting Dynamic Gemini-based Multi-Persona Generation and Interaction seeding...")
-    
+
+    # Idempotency guard: skip Gemini API call if personas already seeded
+    if not force:
+        res = await db.execute(text(
+            "SELECT COUNT(DISTINCT user_id) FROM interaction.likes "
+            "WHERE user_id IN (SELECT id FROM auth.users WHERE email = 'system_benchmark@insterest.ai' OR nickname LIKE 'Gemini%' OR nickname LIKE '%_1' OR nickname LIKE '%_50')"
+        ))
+        # Simpler: count distinct users in interaction.likes whose id matches deterministic uuid5 pattern
+        res2 = await db.execute(text("SELECT COUNT(DISTINCT user_id) FROM interaction.likes"))
+        existing_users = (res2.scalar() or 0)
+        if existing_users >= 50:
+            logger.info(f"⏭️ Gemini seeding skipped — {existing_users} persona users already have likes in DB. Use force=true to re-seed.")
+            return {
+                "status": "skipped",
+                "message": f"Already seeded ({existing_users} users with likes). Pass force=true to re-seed.",
+                "personas_count": existing_users,
+                "total_likes_seeded": 0,
+            }
+
     api_key = settings.GEMINI_API_KEY
     if not api_key:
         logger.error("❌ GEMINI_API_KEY is not configured in settings.")

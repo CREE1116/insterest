@@ -144,13 +144,15 @@ async def run_animal_benchmark(
 
 @router.post("/benchmark/seed-gemini")
 async def seed_gemini_personas_interactions(
+    force: bool = False,
     db: AsyncSession = Depends(get_db)
 ):
     """
     제미나이 API를 활용하여 가상 유저 페르소나 및 고품질 시뮬레이션 좋아요를 DB에 일괄 주입합니다.
+    이미 50개 이상의 페르소나가 존재하면 Gemini 호출을 건너뜁니다 (force=true로 강제 재실행 가능).
     """
     from app.services.seed_gemini_interactions import seed_gemini_interactions_service
-    return await seed_gemini_interactions_service(db)
+    return await seed_gemini_interactions_service(db, force=force)
 
 @router.get("/debug/users")
 async def get_debug_active_users(

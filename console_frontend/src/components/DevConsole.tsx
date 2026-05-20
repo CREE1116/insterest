@@ -102,6 +102,7 @@ const DevConsole: React.FC = () => {
   const [animalLoading, setAnimalLoading] = useState(false);
   const [geminiResult, setGeminiResult] = useState<any | null>(null);
   const [geminiLoading, setGeminiLoading] = useState(false);
+  const [geminiForce, setGeminiForce] = useState(false);
   const [customZip, setCustomZip] = useState<File | null>(null);
   const [customZipName, setCustomZipName] = useState('');
   const [customResult, setCustomResult] = useState<CustomResult | null>(null);
@@ -255,11 +256,13 @@ const DevConsole: React.FC = () => {
     setGeminiLoading(true);
     setGeminiResult(null);
     try {
-      const res = await client.post('/discovery/benchmark/seed-gemini');
-      if (res.data && res.data.status === 'success') {
+      const res = await client.post(`/discovery/benchmark/seed-gemini?force=${geminiForce}`);
+      if (res.data && (res.data.status === 'success' || res.data.status === 'skipped')) {
         setGeminiResult(res.data);
-        fetchActiveUsers(); // Refresh active user list for simulator tab!
-        fetchMetrics(); // Invalidate metrics to recalculate recommendations
+        if (res.data.status === 'success') {
+          fetchActiveUsers();
+          fetchMetrics();
+        }
       } else {
         alert(res.data.message || 'Gemini 가상 인터랙션 시딩 실패');
       }
@@ -928,14 +931,20 @@ const DevConsole: React.FC = () => {
                       Gemini-2.5-Flash LLM이 고양이 집사, 운동 매니아, 맛집 탐방가 등 개성 넘치는 50개의 가상 인물(Persona)을 생성하고, 각자의 관심사에 맞는 포스트에 좋아요를 남깁니다.
                     </p>
                   </div>
-                  <button
-                    onClick={handleRunGeminiSeeding}
-                    disabled={geminiLoading}
-                    style={{ backgroundColor: '#6366f1', color: 'white', padding: '0.875rem 1.75rem', borderRadius: '14px', fontWeight: 800, fontSize: '0.9375rem', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.625rem', flexShrink: 0 }}
-                  >
-                    {geminiLoading ? <RefreshCw size={18} className="animate-spin" /> : <Wand2 size={18} />}
-                    시뮬레이션 데이터 주입 시작
-                  </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.5rem', flexShrink: 0 }}>
+                    <button
+                      onClick={handleRunGeminiSeeding}
+                      disabled={geminiLoading}
+                      style={{ backgroundColor: '#6366f1', color: 'white', padding: '0.875rem 1.75rem', borderRadius: '14px', fontWeight: 800, fontSize: '0.9375rem', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.625rem' }}
+                    >
+                      {geminiLoading ? <RefreshCw size={18} className="animate-spin" /> : <Wand2 size={18} />}
+                      시뮬레이션 데이터 주입 시작
+                    </button>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8125rem', color: '#64748b', cursor: 'pointer', userSelect: 'none' }}>
+                      <input type="checkbox" checked={geminiForce} onChange={e => setGeminiForce(e.target.checked)} style={{ accentColor: '#6366f1' }} />
+                      이미 시드된 경우에도 강제 재실행 (Gemini API 비용 발생)
+                    </label>
+                  </div>
                 </div>
 
                 {geminiLoading && (
@@ -945,7 +954,17 @@ const DevConsole: React.FC = () => {
                   </div>
                 )}
 
-                {geminiResult && (
+                {geminiResult && geminiResult.status === 'skipped' && (
+                  <div style={{ borderRadius: '16px', padding: '1.5rem', backgroundColor: '#f0fdf4', border: '2px solid #bbf7d0', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <span style={{ fontSize: '2rem' }}>✅</span>
+                    <div>
+                      <p style={{ fontWeight: 800, color: '#166534', fontSize: '1rem', marginBottom: '0.25rem' }}>이미 시딩 완료됨 — Gemini API 호출 건너뜀</p>
+                      <p style={{ color: '#15803d', fontSize: '0.875rem' }}>{geminiResult.message}</p>
+                    </div>
+                  </div>
+                )}
+
+                {geminiResult && geminiResult.status === 'success' && (
                   <>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
                       <div style={{ borderRadius: '20px', padding: '2rem', textAlign: 'center', border: '2px solid #ddd6fe', background: 'linear-gradient(135deg, #faf5ff 0%, #ede9fe 100%)' }}>
