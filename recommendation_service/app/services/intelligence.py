@@ -61,6 +61,7 @@ class UnifiedIntelligenceService:
                 rank_lists.append([str(pid) for pid in text_ids])
 
             # 2. 유저 개인화 취향 분기 (UserTower -> CLIP 512-dim)
+            self.model.eval()
             user_vec = None
             if (user_id or history_ids) and use_personalization:
                 if not history_ids and user_id:
@@ -542,56 +543,59 @@ class UnifiedIntelligenceService:
         best_loss = float("inf")
         patience_counter = 0
 
-        for epoch in range(EPOCHS):
-            random.shuffle(train_data)
-            total_loss = 0.0
-            n_batches = 0
-            for i in range(0, len(train_data), BATCH):
-                batch = train_data[i:i + BATCH]
-                hist_embs, target_vecs, query_caps = [], [], []
-                for hist, target in batch:
-                    h_embs = [item_emb_lookup[h_id] for h_id in hist]
-                    while len(h_embs) < 10:
-                        h_embs.insert(0, torch.zeros(512, device=self.device))
-                    hist_embs.append(torch.stack(h_embs))
+        try:
+            for epoch in range(EPOCHS):
+                random.shuffle(train_data)
+                total_loss = 0.0
+                n_batches = 0
+                for i in range(0, len(train_data), BATCH):
+                    batch = train_data[i:i + BATCH]
+                    hist_embs, target_vecs, query_caps = [], [], []
+                    for hist, target in batch:
+                        h_embs = [item_emb_lookup[h_id] for h_id in hist]
+                        while len(h_embs) < 10:
+                            h_embs.insert(0, torch.zeros(512, device=self.device))
+                        hist_embs.append(torch.stack(h_embs))
 
-                    c_raw, img_raw, h_raw = raw_clip[target]
-                    c_d = c_raw.to(self.device)
-                    img_d = img_raw.to(self.device)
-                    h_d = h_raw.to(self.device) if h_raw is not None else None
-                    target_vec = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0)
-                    target_vecs.append(target_vec)
-                    query_caps.append(c_d.squeeze(0))
+                        c_raw, img_raw, h_raw = raw_clip[target]
+                        c_d = c_raw.to(self.device)
+                        img_d = img_raw.to(self.device)
+                        h_d = h_raw.to(self.device) if h_raw is not None else None
+                        target_vec = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0)
+                        target_vecs.append(target_vec)
+                        query_caps.append(c_d.squeeze(0))
 
-                pool_keys = list(item_emb_lookup.keys())
-                target_set = {target for _, target in batch}
-                neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
-                n_hard = min(64, len(neg_candidates))
-                extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device) \
-                             if n_hard > 0 else None
+                    pool_keys = list(item_emb_lookup.keys())
+                    target_set = {target for _, target in batch}
+                    neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
+                    n_hard = min(64, len(neg_candidates))
+                    extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device) \
+                                 if n_hard > 0 else None
 
-                loss = self.trainer.train_user_query_step(
-                    torch.stack(hist_embs),
-                    torch.stack(target_vecs),
-                    torch.stack(query_caps),
-                    extra_negs,
-                )
-                total_loss += loss
-                n_batches += 1
+                    loss = self.trainer.train_user_query_step(
+                        torch.stack(hist_embs),
+                        torch.stack(target_vecs),
+                        torch.stack(query_caps),
+                        extra_negs,
+                    )
+                    total_loss += loss
+                    n_batches += 1
 
-            scheduler.step()
-            avg_loss = total_loss / max(n_batches, 1)
-            loss_history.append({"epoch": epoch + 1, "loss": round(avg_loss, 4)})
-            logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} lr={scheduler.get_last_lr()[0]:.2e}")
+                scheduler.step()
+                avg_loss = total_loss / max(n_batches, 1)
+                loss_history.append({"epoch": epoch + 1, "loss": round(avg_loss, 4)})
+                logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} lr={scheduler.get_last_lr()[0]:.2e}")
 
-            if avg_loss < best_loss - MIN_DELTA:
-                best_loss = avg_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= PATIENCE:
-                    logger.info(f"⏹ Early stopping at epoch {epoch+1} (no improvement for {PATIENCE} epochs)")
-                    break
+                if avg_loss < best_loss - MIN_DELTA:
+                    best_loss = avg_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= PATIENCE:
+                        logger.info(f"⏹ Early stopping at epoch {epoch+1} (no improvement for {PATIENCE} epochs)")
+                        break
+        finally:
+            self.model.eval()
 
         return loss_history
 

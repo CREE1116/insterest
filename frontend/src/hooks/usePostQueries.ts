@@ -86,9 +86,11 @@ export const useFeed = (viewMode: string, userId?: string, options: any = {}) =>
       const limit = 20;
       const skip = typeof pageParam === 'number' ? pageParam : 0;
       
+      let recoIdsCount = 0;
       if (viewMode === 'all') {
         const recoRes = await client.get('/discovery/recommend', { params: { user_id: userId || '0', limit, skip } });
         const postIds = Array.isArray(recoRes.data) ? recoRes.data : [];
+        recoIdsCount = postIds.length;
         if (postIds.length > 0) {
           const detailRes = await client.post('/upload/content/batch', { post_ids: postIds });
           fetchedPosts = detailRes.data;
@@ -137,9 +139,12 @@ export const useFeed = (viewMode: string, userId?: string, options: any = {}) =>
         processedPosts = postsToProcess.map((p: any) => ({ ...p, author: userMap[p.user_id] || { nickname: '유저' } }));
       }
       
+      const hasMore = viewMode === 'all'
+        ? recoIdsCount === limit
+        : processedPosts.length === limit;
       return {
         posts: processedPosts,
-        nextSkip: processedPosts.length === limit ? skip + limit : undefined
+        nextSkip: hasMore ? skip + limit : undefined
       };
     },
     initialPageParam: 0,

@@ -615,6 +615,9 @@ class BenchmarkService:
                 "DELETE FROM search.post_vectors WHERE (content_text->>'is_animal_benchmark')::boolean = true"
             ))
             await db.execute(text("DELETE FROM upload.media WHERE user_id = :uid"), {"uid": system_user_id})
+            await db.execute(text(
+                "DELETE FROM upload.post_hashtag WHERE post_id IN (SELECT id FROM upload.post WHERE user_id = :uid)"
+            ), {"uid": system_user_id})
             await db.execute(text("DELETE FROM upload.post WHERE user_id = :uid"), {"uid": system_user_id})
             await db.execute(text("DELETE FROM upload.content WHERE user_id = :uid"), {"uid": system_user_id})
             await db.commit()
