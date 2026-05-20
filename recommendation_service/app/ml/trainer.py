@@ -73,6 +73,7 @@ class UnifiedDiscoveryTrainer:
 
         loss = self.info_nce_loss(discovery_vecs, key_vecs)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
         return loss.item()
 

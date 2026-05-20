@@ -440,8 +440,6 @@ class UnifiedIntelligenceService:
                         lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0).detach()
                 return lookup
 
-            item_emb_lookup: Dict[Any, torch.Tensor] = _build_lookup()
-
             train_data = []
             for uid, pids in user_sequences.items():
                 for i in range(1, len(pids)):
@@ -450,54 +448,10 @@ class UnifiedIntelligenceService:
                     if target in p_vectors and all(h in p_vectors for h in hist):
                         train_data.append((hist, target))
 
-            EPOCHS = 50
-            self.model.train()
-            for epoch in range(EPOCHS):
-                # 10 에폭마다 gate 가중치 변화를 lookup에 반영
-                if epoch > 0 and epoch % 10 == 0:
-                    item_emb_lookup = _build_lookup()
-
-                random.shuffle(train_data)
-                total_loss = 0.0
-                for i in range(0, len(train_data), BATCH):
-                    batch = train_data[i:i+BATCH]
-                    hist_embs, target_vecs, query_caps = [], [], []
-                    for hist, target in batch:
-                        # History: precomputed lookup (detach) → UserTower gradient path
-                        h_embs = [item_emb_lookup[h_id] for h_id in hist]
-                        while len(h_embs) < 10:
-                            h_embs.insert(0, torch.zeros(512, device=self.device))
-                        hist_embs.append(torch.stack(h_embs))
-
-                        # Target: recomputed WITH grad → ItemFusionGate gradient path
-                        c_raw, img_raw, h_raw = raw_clip[target]
-                        c_d = c_raw.to(self.device)
-                        img_d = img_raw.to(self.device)
-                        h_d = h_raw.to(self.device) if h_raw is not None else None
-                        target_vec = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0)
-                        target_vecs.append(target_vec)
-
-                        # Query = CLIP text of target item
-                        qv = c_d.squeeze(0)  # already 512-dim CLIP
-                        query_caps.append(qv)
-
-                    # Hard negatives from lookup (detach — too many to track grads)
-                    pool_keys = list(item_emb_lookup.keys())
-                    target_set = {target for _, target in batch}
-                    neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
-                    n_hard = min(64, len(neg_candidates))
-                    extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device) \
-                                 if n_hard > 0 else None
-
-                    loss = self.trainer.train_user_query_step(
-                        torch.stack(hist_embs),
-                        torch.stack(target_vecs),
-                        torch.stack(query_caps),
-                        extra_negs,
-                    )
-                    total_loss += loss
-                if (epoch + 1) % 10 == 0:
-                    logger.info(f"  Epoch {epoch+1}/{EPOCHS} loss={total_loss:.4f}")
+            # CPU-bound 학습 루프를 스레드에서 실행 → 이벤트 루프 블로킹 방지
+            await asyncio.to_thread(
+                self._run_training_loop, raw_clip, train_data, _build_lookup, BATCH
+            )
 
             logger.info("✅ [UserTower+ItemGate] Training complete.")
             self.trainer.save_model(settings.MODEL_SAVE_PATH)
@@ -509,6 +463,51 @@ class UnifiedIntelligenceService:
 
         except Exception as e:
             logger.error(f"❌ Training failure: {e}", exc_info=True)
+
+    def _run_training_loop(self, raw_clip, train_data, build_lookup_fn, BATCH=32):
+        """순수 CPU/GPU 연산만 수행 — asyncio.to_thread에서 호출."""
+        item_emb_lookup = build_lookup_fn()
+        EPOCHS = 50
+        self.model.train()
+        for epoch in range(EPOCHS):
+            if epoch > 0 and epoch % 10 == 0:
+                item_emb_lookup = build_lookup_fn()
+
+            random.shuffle(train_data)
+            total_loss = 0.0
+            for i in range(0, len(train_data), BATCH):
+                batch = train_data[i:i + BATCH]
+                hist_embs, target_vecs, query_caps = [], [], []
+                for hist, target in batch:
+                    h_embs = [item_emb_lookup[h_id] for h_id in hist]
+                    while len(h_embs) < 10:
+                        h_embs.insert(0, torch.zeros(512, device=self.device))
+                    hist_embs.append(torch.stack(h_embs))
+
+                    c_raw, img_raw, h_raw = raw_clip[target]
+                    c_d = c_raw.to(self.device)
+                    img_d = img_raw.to(self.device)
+                    h_d = h_raw.to(self.device) if h_raw is not None else None
+                    target_vec = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0)
+                    target_vecs.append(target_vec)
+                    query_caps.append(c_d.squeeze(0))
+
+                pool_keys = list(item_emb_lookup.keys())
+                target_set = {target for _, target in batch}
+                neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
+                n_hard = min(64, len(neg_candidates))
+                extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device) \
+                             if n_hard > 0 else None
+
+                loss = self.trainer.train_user_query_step(
+                    torch.stack(hist_embs),
+                    torch.stack(target_vecs),
+                    torch.stack(query_caps),
+                    extra_negs,
+                )
+                total_loss += loss
+            if (epoch + 1) % 10 == 0:
+                logger.info(f"  Epoch {epoch+1}/{EPOCHS} loss={total_loss:.4f}")
 
     async def evaluate_offline(self, db: AsyncSession):
         """
