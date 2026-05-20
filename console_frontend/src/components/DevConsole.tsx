@@ -178,6 +178,13 @@ const DevConsole: React.FC = () => {
         postIds = res.data || [];
       }
 
+      // 상대 경로 이미지 URL을 ingress 절대 경로로 변환
+      const apiOrigin = window.location.hostname === 'localhost'
+        ? 'http://localhost'
+        : `${window.location.protocol}//${window.location.hostname}`;
+      const resolveImageUrl = (url: string) =>
+        url.startsWith('http') ? url : `${apiOrigin}${url}`;
+
       const resolvedPosts = await Promise.all(
         postIds.map(async (id, idx) => {
           try {
@@ -185,7 +192,7 @@ const DevConsole: React.FC = () => {
             const postData = pRes.data;
             const mediaList = postData.content?.media_list || [];
             const imgMedia = mediaList.find((m: any) => m.type === 'image' || m.type === 'IMAGE' || m.type === 'PHOTO');
-            const imageUrl = imgMedia ? imgMedia.url : '';
+            const imageUrl = imgMedia?.url ? resolveImageUrl(imgMedia.url) : '';
             const decayScore = Math.max(0.98 - idx * 0.038, 0.45);
             return {
               id,
@@ -840,47 +847,80 @@ const DevConsole: React.FC = () => {
                       {/* Per-class detail table */}
                       <div>
                         <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a', marginBottom: '0.75rem' }}>
-                          클래스별 검색 순위 ({animalResult.details.length}개 클래스)
+                          클래스별 검색 결과 ({animalResult.details.length}개 클래스)
                         </h4>
                         <div style={{ borderRadius: '14px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
-                          {/* Table header */}
-                          <div style={{ display: 'grid', gridTemplateColumns: '2rem 1fr 6rem 6rem 6rem 6rem', gap: 0, backgroundColor: '#f1f5f9', borderBottom: '2px solid #e2e8f0', padding: '0.625rem 1rem', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b' }}>#</span>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b' }}>CLASS</span>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#166534', textAlign: 'center' }}>Text R@1</span>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#166534', textAlign: 'center' }}>Text R@3</span>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#075985', textAlign: 'center' }}>Img R@1</span>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#075985', textAlign: 'center' }}>Img R@3</span>
+                          {/* Header */}
+                          <div style={{ display: 'grid', gridTemplateColumns: '2.5rem 1fr 5.5rem 3.5rem 3.5rem 3.5rem 5.5rem 3.5rem 3.5rem 3.5rem', backgroundColor: '#f8fafc', borderBottom: '2px solid #e2e8f0', padding: '0.625rem 0.875rem', alignItems: 'center', gap: '0.25rem' }}>
+                            {[
+                              { label: '#',         color: '#94a3b8', align: 'left'   },
+                              { label: 'CLASS',     color: '#475569', align: 'left'   },
+                              { label: 'Text Rank', color: '#166534', align: 'center' },
+                              { label: 'T@1',       color: '#166534', align: 'center' },
+                              { label: 'T@3',       color: '#166534', align: 'center' },
+                              { label: 'T@5',       color: '#166534', align: 'center' },
+                              { label: 'Img Rank',  color: '#075985', align: 'center' },
+                              { label: 'I@1',       color: '#075985', align: 'center' },
+                              { label: 'I@3',       color: '#075985', align: 'center' },
+                              { label: 'I@5',       color: '#075985', align: 'center' },
+                            ].map(col => (
+                              <span key={col.label} style={{ fontSize: '0.6875rem', fontWeight: 700, color: col.color, textAlign: col.align as any, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{col.label}</span>
+                            ))}
                           </div>
-                          {/* Table body — fixed height scrollable */}
-                          <div style={{ maxHeight: '420px', overflowY: 'auto' }}>
+
+                          {/* Body */}
+                          <div style={{ maxHeight: '480px', overflowY: 'auto' }}>
                             {animalResult.details.map((det, idx) => {
                               const tr = typeof det.text_rank === 'number' ? det.text_rank : 999;
                               const ir = typeof det.image_rank === 'number' ? det.image_rank : 999;
-                              const rankBadge = (rank: number, type: 'text' | 'img') => {
-                                const isText = type === 'text';
-                                let bg, color;
-                                if (rank === 1)        { bg = isText ? '#dcfce7' : '#dbeafe'; color = isText ? '#15803d' : '#1d4ed8'; }
-                                else if (rank <= 3)    { bg = '#fef9c3'; color = '#a16207'; }
-                                else if (rank <= 10)   { bg = '#ffedd5'; color = '#c2410c'; }
-                                else                   { bg = '#fee2e2'; color = '#b91c1c'; }
+
+                              const rankBadge = (rank: number, scheme: 'green' | 'blue') => {
+                                const notFound = rank >= 999;
+                                let bg: string, fg: string;
+                                if (notFound)      { bg = '#f1f5f9'; fg = '#94a3b8'; }
+                                else if (rank <= 1) { bg = scheme === 'green' ? '#dcfce7' : '#dbeafe'; fg = scheme === 'green' ? '#15803d' : '#1d4ed8'; }
+                                else if (rank <= 3) { bg = '#fef9c3'; fg = '#a16207'; }
+                                else if (rank <= 10){ bg = '#ffedd5'; fg = '#c2410c'; }
+                                else               { bg = '#fee2e2'; fg = '#b91c1c'; }
                                 return (
-                                  <span style={{ display: 'inline-block', minWidth: '3rem', textAlign: 'center', fontSize: '0.8125rem', fontWeight: 800, padding: '3px 10px', borderRadius: '8px', backgroundColor: bg, color }}>
-                                    {rank >= 999 ? 'N/F' : `#${rank}`}
+                                  <span style={{ display: 'inline-block', minWidth: '3.25rem', textAlign: 'center', fontSize: '0.8125rem', fontWeight: 800, padding: '3px 8px', borderRadius: '7px', backgroundColor: bg, color: fg }}>
+                                    {notFound ? 'N/F' : `#${rank}`}
                                   </span>
                                 );
                               };
+
+                              const hitBadge = (rank: number, k: number) => {
+                                const hit = rank <= k;
+                                return (
+                                  <span style={{ display: 'inline-block', fontSize: '0.8125rem', fontWeight: 800, padding: '2px 8px', borderRadius: '7px', backgroundColor: hit ? '#f0fdf4' : '#fafafa', color: hit ? '#16a34a' : '#cbd5e1', border: `1px solid ${hit ? '#bbf7d0' : '#e2e8f0'}` }}>
+                                    {hit ? '✓' : '✗'}
+                                  </span>
+                                );
+                              };
+
                               return (
-                                <div key={det.name} style={{ display: 'grid', gridTemplateColumns: '2rem 1fr 6rem 6rem 6rem 6rem', gap: 0, padding: '0.5rem 1rem', alignItems: 'center', borderBottom: '1px solid #f1f5f9', backgroundColor: idx % 2 === 0 ? 'white' : '#fafafa' }}>
+                                <div key={det.name} style={{ display: 'grid', gridTemplateColumns: '2.5rem 1fr 5.5rem 3.5rem 3.5rem 3.5rem 5.5rem 3.5rem 3.5rem 3.5rem', gap: '0.25rem', padding: '0.5rem 0.875rem', alignItems: 'center', borderBottom: '1px solid #f8fafc', backgroundColor: idx % 2 === 0 ? 'white' : '#fafffe' }}>
                                   <span style={{ fontSize: '0.75rem', color: '#94a3b8', fontWeight: 600 }}>{idx + 1}</span>
-                                  <span style={{ fontSize: '0.875rem', fontWeight: 700, textTransform: 'capitalize', color: '#0f172a' }}>{det.name}</span>
-                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(tr, 'text')}</div>
-                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(Math.min(tr, 3) <= 3 ? 1 : tr, 'text')}</div>
-                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(ir, 'img')}</div>
-                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(Math.min(ir, 3) <= 3 ? 1 : ir, 'img')}</div>
+                                  <span style={{ fontSize: '0.8125rem', fontWeight: 700, textTransform: 'capitalize', color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{det.name}</span>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(tr, 'green')}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{hitBadge(tr, 1)}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{hitBadge(tr, 3)}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{hitBadge(tr, 5)}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(ir, 'blue')}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{hitBadge(ir, 1)}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{hitBadge(ir, 3)}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{hitBadge(ir, 5)}</div>
                                 </div>
                               );
                             })}
+                          </div>
+
+                          {/* Footer summary */}
+                          <div style={{ padding: '0.625rem 0.875rem', backgroundColor: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', gap: '1.5rem', fontSize: '0.75rem', fontWeight: 700, color: '#64748b' }}>
+                            <span>✅ Text@1: {animalResult.details.filter(d => typeof d.text_rank === 'number' && d.text_rank <= 1).length}/{animalResult.details.length}</span>
+                            <span>✅ Text@3: {animalResult.details.filter(d => typeof d.text_rank === 'number' && d.text_rank <= 3).length}/{animalResult.details.length}</span>
+                            <span style={{ borderLeft: '1px solid #e2e8f0', paddingLeft: '1.5rem' }}>✅ Img@1: {animalResult.details.filter(d => typeof d.image_rank === 'number' && d.image_rank <= 1).length}/{animalResult.details.length}</span>
+                            <span>✅ Img@3: {animalResult.details.filter(d => typeof d.image_rank === 'number' && d.image_rank <= 3).length}/{animalResult.details.length}</span>
                           </div>
                         </div>
                       </div>

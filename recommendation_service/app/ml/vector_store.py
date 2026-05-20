@@ -18,22 +18,27 @@ class RedisVectorStore:
         self.index_name = "post_vectors"
 
     def create_index(self):
-        """인덱스 생성. 이미 올바른 듀얼 스키마로 존재하면 그대로 재사용."""
+        """인덱스 생성. 이미 올바른 트리플 스키마로 존재하면 그대로 재사용."""
         try:
-            # text_vector 필드가 있는지 확인하여 없는 경우 드롭 후 재생성
+            # text_vector 와 image_vector 필드가 있는지 확인하여 없는 경우 드롭 후 재생성
             try:
                 info = self.r.execute_command("FT.INFO", self.index_name)
                 # info is a list of key-value pairs
                 has_text_vector = False
+                has_image_vector = False
                 for x in info:
-                    if isinstance(x, bytes) and b"text_vector" in x:
-                        has_text_vector = True
-                        break
-                    elif isinstance(x, str) and "text_vector" in x:
-                        has_text_vector = True
-                        break
-                if not has_text_vector:
-                    logger.warning("⚠️ Redis index doesn't contain 'text_vector'. Dropping to migrate to dual HNSW schema...")
+                    if isinstance(x, bytes):
+                        if b"text_vector" in x:
+                            has_text_vector = True
+                        if b"image_vector" in x:
+                            has_image_vector = True
+                    elif isinstance(x, str):
+                        if "text_vector" in x:
+                            has_text_vector = True
+                        if "image_vector" in x:
+                            has_image_vector = True
+                if not has_text_vector or not has_image_vector:
+                    logger.warning("⚠️ Redis index doesn't contain 'text_vector' or 'image_vector'. Dropping to migrate to triple HNSW schema...")
                     self.r.execute_command("FT.DROPINDEX", self.index_name)
             except Exception:
                 pass
@@ -52,8 +57,12 @@ class RedisVectorStore:
                 "TYPE", "FLOAT32",
                 "DIM", "768",
                 "DISTANCE_METRIC", "COSINE",
+                "image_vector", "VECTOR", "HNSW", "6",
+                "TYPE", "FLOAT32",
+                "DIM", "512",
+                "DISTANCE_METRIC", "COSINE",
             )
-            logger.info(f"✅ Created CLIP 512-dim & SBERT 768-dim Dual Redis HNSW Index: {self.index_name}")
+            logger.info(f"✅ Created CLIP 512-dim & SBERT 768-dim Triple Redis HNSW Index: {self.index_name}")
         except redis.exceptions.ResponseError as e:
             if "Index already exists" in str(e):
                 logger.info(f"✅ Redis index '{self.index_name}' already exists, reusing.")
@@ -79,8 +88,12 @@ class RedisVectorStore:
                         "TYPE", "FLOAT32",
                         "DIM", "768",
                         "DISTANCE_METRIC", "COSINE",
+                        "image_vector", "VECTOR", "HNSW", "6",
+                        "TYPE", "FLOAT32",
+                        "DIM", "512",
+                        "DISTANCE_METRIC", "COSINE",
                     )
-                    logger.info(f"✅ Recreated Redis index with dual HNSW schema: {self.index_name}")
+                    logger.info(f"✅ Recreated Redis index with triple HNSW schema: {self.index_name}")
                 except redis.exceptions.ResponseError as e2:
                     logger.error(f"❌ Failed to recreate Redis index: {e2}")
 
