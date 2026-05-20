@@ -7,6 +7,7 @@ import AuthModal from './components/AuthModal';
 import PostModal from './components/PostModal';
 import CreateModal from './components/CreateModal';
 import SettingsModal from './components/SettingsModal';
+import ImageSearchModal from './components/ImageSearchModal';
 import client from './api/client';
 import { useFeed, useSearch, useSavedIds, useCollections, useImageSearch } from './hooks/usePostQueries';
 
@@ -31,15 +32,6 @@ const AppContent: React.FC = () => {
   const [selectedCollection, setSelectedCollection] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchImage, setSearchImage] = useState<File | null>(null);
-  const searchFileInputRef = React.useRef<HTMLInputElement>(null);
-
-  const handleSearchImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setSearchQuery('');
-      setSearchImage(file);
-    }
-  };
 
   useEffect(() => {
     if (viewMode !== 'explore') {
@@ -51,6 +43,7 @@ const AppContent: React.FC = () => {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showImageSearchModal, setShowImageSearchModal] = useState(false);
   const [selectedPost, setSelectedPost] = useState<any | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -297,18 +290,11 @@ const AppContent: React.FC = () => {
                 }} 
               />
               <button 
-                onClick={() => searchFileInputRef.current?.click()}
+                onClick={() => setShowImageSearchModal(true)}
                 style={{ position: 'absolute', right: '1.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
               >
                 <Camera size={20} />
               </button>
-              <input 
-                type="file" 
-                ref={searchFileInputRef} 
-                onChange={handleSearchImageChange} 
-                style={{ display: 'none' }} 
-                accept="image/*" 
-              />
             </div>
           </div>
         )}
@@ -481,6 +467,15 @@ const AppContent: React.FC = () => {
           />
         )}
         {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} />}
+        {showImageSearchModal && (
+          <ImageSearchModal 
+            onClose={() => setShowImageSearchModal(false)} 
+            onSelectImage={(file) => {
+              setSearchQuery('');
+              setSearchImage(file);
+            }} 
+          />
+        )}
         {selectedPost && (
           <PostModal 
             post={selectedPost} 
