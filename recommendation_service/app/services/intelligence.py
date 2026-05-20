@@ -113,15 +113,18 @@ class UnifiedIntelligenceService:
 
                 sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
-                # 부족하면 trending으로 패딩 (필요한 수만큼 정확히 가져옴, COALESCE로 NULL 방어)
+                # 부족하면 trending으로 패딩 (interaction.likes 실제 집계 기준)
                 needed = skip + limit - len(sorted_items)
                 if needed > 0:
                     existing_ids = {pid for pid, _ in sorted_items} | exclude_set
                     pad_stmt = text("""
-                        SELECT id FROM upload.post
-                        WHERE is_deleted = FALSE
-                        ORDER BY COALESCE(like_count, 0) * 0.7 + COALESCE(view_count, 0) * 0.3 DESC,
-                                 created_at DESC
+                        SELECT p.id FROM upload.post p
+                        LEFT JOIN (
+                            SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
+                        ) lc ON lc.post_id = p.id
+                        WHERE p.is_deleted = FALSE
+                        ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
+                                 p.created_at DESC
                         LIMIT :lim
                     """)
                     pad_res = await db.execute(pad_stmt, {"lim": needed + len(existing_ids) + 20})
@@ -131,15 +134,43 @@ class UnifiedIntelligenceService:
                             sorted_items.append((pid, 0.0))
                             existing_ids.add(pid)
 
-                page = sorted_items[skip: skip + limit]
+                # 다양성 확보: 페이지의 25%는 항상 트렌딩/신규 콘텐츠로 채움
+                # → 유저 취향 벡터에 없는 최근 주입 데이터(CIFAR 등)도 홈피드에 노출
+                explore_slots = max(limit // 4, 3)
+                personalized_slice = sorted_items[skip: skip + limit - explore_slots]
+                personalized_ids = {pid for pid, _ in personalized_slice} | exclude_set
+
+                explore_stmt = text("""
+                    SELECT p.id FROM upload.post p
+                    LEFT JOIN (
+                        SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
+                    ) lc ON lc.post_id = p.id
+                    WHERE p.is_deleted = FALSE
+                    ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
+                             p.created_at DESC
+                    LIMIT :lim
+                """)
+                explore_res = await db.execute(explore_stmt, {"lim": explore_slots * 5 + 20})
+                trending_items = []
+                for row in explore_res.all():
+                    pid = str(row[0])
+                    if pid not in personalized_ids:
+                        trending_items.append((pid, 0.0))
+                        if len(trending_items) >= explore_slots:
+                            break
+
+                page = personalized_slice + trending_items
                 return [{"id": pid, "score": float(score)} for pid, score in page]
 
-            # Fallback: 쿼리도 유저도 없는 경우 → 트렌딩 (COALESCE로 NULL 방어)
+            # Fallback: 쿼리도 유저도 없는 경우 → interaction.likes 실집계 기반 트렌딩
             stmt = text("""
-                SELECT id FROM upload.post
-                WHERE is_deleted = FALSE
-                ORDER BY COALESCE(like_count, 0) * 0.7 + COALESCE(view_count, 0) * 0.3 DESC,
-                         created_at DESC
+                SELECT p.id FROM upload.post p
+                LEFT JOIN (
+                    SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
+                ) lc ON lc.post_id = p.id
+                WHERE p.is_deleted = FALSE
+                ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
+                         p.created_at DESC
                 LIMIT :l OFFSET :s
             """)
             res = await db.execute(stmt, {"l": limit, "s": skip})
@@ -232,10 +263,13 @@ class UnifiedIntelligenceService:
             if needed > 0:
                 existing_ids = {pid for pid, _ in sorted_items} | exclude_set
                 pad_stmt = text("""
-                    SELECT id FROM upload.post
-                    WHERE is_deleted = FALSE
-                    ORDER BY COALESCE(like_count, 0) * 0.7 + COALESCE(view_count, 0) * 0.3 DESC,
-                             created_at DESC
+                    SELECT p.id FROM upload.post p
+                    LEFT JOIN (
+                        SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
+                    ) lc ON lc.post_id = p.id
+                    WHERE p.is_deleted = FALSE
+                    ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
+                             p.created_at DESC
                     LIMIT :lim
                 """)
                 pad_res = await db.execute(pad_stmt, {"lim": needed + len(existing_ids) + 20})
@@ -250,7 +284,16 @@ class UnifiedIntelligenceService:
 
         except Exception as e:
             logger.error(f"❌ Error in discover_by_image: {e}", exc_info=True)
-            stmt = text("SELECT id FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
+            stmt = text("""
+                SELECT p.id FROM upload.post p
+                LEFT JOIN (
+                    SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
+                ) lc ON lc.post_id = p.id
+                WHERE p.is_deleted = FALSE
+                ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
+                         p.created_at DESC
+                LIMIT :l OFFSET :s
+            """)
             res = await db.execute(stmt, {"l": limit, "s": skip})
             return [{"id": str(row[0]), "score": 0.0} for row in res.all()]
 
@@ -468,13 +511,16 @@ class UnifiedIntelligenceService:
         """순수 CPU/GPU 연산만 수행 — asyncio.to_thread에서 호출."""
         item_emb_lookup = build_lookup_fn()
         EPOCHS = 50
+        # lookup 재빌드 주기: 10→5 에폭으로 단축하여 stale embedding으로 인한 손실 스파이크 감소
+        REBUILD_EVERY = 5
         self.model.train()
         for epoch in range(EPOCHS):
-            if epoch > 0 and epoch % 10 == 0:
+            if epoch > 0 and epoch % REBUILD_EVERY == 0:
                 item_emb_lookup = build_lookup_fn()
 
             random.shuffle(train_data)
             total_loss = 0.0
+            n_batches = 0
             for i in range(0, len(train_data), BATCH):
                 batch = train_data[i:i + BATCH]
                 hist_embs, target_vecs, query_caps = [], [], []
@@ -506,8 +552,10 @@ class UnifiedIntelligenceService:
                     extra_negs,
                 )
                 total_loss += loss
-            if (epoch + 1) % 10 == 0:
-                logger.info(f"  Epoch {epoch+1}/{EPOCHS} loss={total_loss:.4f}")
+                n_batches += 1
+            if (epoch + 1) % 5 == 0:
+                avg_loss = total_loss / max(n_batches, 1)
+                logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} (total={total_loss:.4f}, batches={n_batches})")
 
     async def evaluate_offline(self, db: AsyncSession):
         """
