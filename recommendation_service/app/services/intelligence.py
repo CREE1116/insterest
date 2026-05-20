@@ -529,14 +529,15 @@ class UnifiedIntelligenceService:
     def _run_training_loop(self, raw_clip, train_data, build_lookup_fn, BATCH=32) -> list:
         """순수 CPU/GPU 연산만 수행 — asyncio.to_thread에서 호출. epoch loss 이력 반환."""
         item_emb_lookup = build_lookup_fn()
-        EPOCHS = 50
-        REBUILD_EVERY = 5
+        EPOCHS = 20
         self.model.train()
         loss_history = []
-        for epoch in range(EPOCHS):
-            if epoch > 0 and epoch % REBUILD_EVERY == 0:
-                item_emb_lookup = build_lookup_fn()
 
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.trainer.optimizer, T_max=EPOCHS, eta_min=1e-6
+        )
+
+        for epoch in range(EPOCHS):
             random.shuffle(train_data)
             total_loss = 0.0
             n_batches = 0
@@ -572,10 +573,11 @@ class UnifiedIntelligenceService:
                 )
                 total_loss += loss
                 n_batches += 1
-            if (epoch + 1) % 5 == 0:
-                avg_loss = total_loss / max(n_batches, 1)
-                loss_history.append({"epoch": epoch + 1, "loss": round(avg_loss, 4)})
-                logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} (total={total_loss:.4f}, batches={n_batches})")
+
+            scheduler.step()
+            avg_loss = total_loss / max(n_batches, 1)
+            loss_history.append({"epoch": epoch + 1, "loss": round(avg_loss, 4)})
+            logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} lr={scheduler.get_last_lr()[0]:.2e}")
         return loss_history
 
     async def evaluate_offline(self, db: AsyncSession):
