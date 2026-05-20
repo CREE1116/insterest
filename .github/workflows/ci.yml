@@ -125,9 +125,15 @@ jobs:
 
           SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend" "console-frontend")
 
+          # Repair: fix any deployment that has the wrong image name due to old sed bug
+          # (e.g. console-frontend deployment pointing to 'frontend' image instead of 'console-frontend')
+          if [ -f k8s/console/deployment.yaml ]; then
+            sed -i -E "s|image: ${{ secrets.DOCKERHUB_USERNAME }}/frontend:[a-zA-Z0-9._-]+|image: ${{ secrets.DOCKERHUB_USERNAME }}/console-frontend:latest|g" k8s/console/deployment.yaml
+          fi
+
           for service in "${SERVICES[@]}"; do
             IS_CHANGED=$(echo "$CHANGES" | jq -r ".[] | select(. == \"$service\")")
-            
+
             if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ -n "$IS_CHANGED" ]]; then
               echo "Updating tag for $service..."
               find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:[a-zA-Z0-9._-]+|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
