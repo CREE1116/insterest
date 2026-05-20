@@ -6,7 +6,8 @@ import httpx
 from sqlalchemy import text
 from app.db.session import AsyncSessionLocal
 from app.core.config import settings
-from app.core.logging import logger
+import logging
+logger = logging.getLogger(__name__)
 
 async def seed_gemini_interactions_service(db) -> dict:
     logger.info("🤖 Starting Dynamic Gemini-based Multi-Persona Generation and Interaction seeding...")

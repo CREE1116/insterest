@@ -77,6 +77,7 @@ interface CustomResult {
 
 const DevConsole: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'metrics' | 'simulator' | 'benchmark' | 'system'>('metrics');
+  const [benchmarkSubTab, setBenchmarkSubTab] = useState<'synthetic' | 'animal' | 'gemini' | 'custom'>('animal');
   
   // Tab 1: Metrics State
   const [metrics, setMetrics] = useState<MetricsReport | null>(null);
@@ -751,172 +752,240 @@ const DevConsole: React.FC = () => {
         {/* 3. BENCHMARK TAB */}
         {activeTab === 'benchmark' && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '2rem' }}>
-              
-              {/* Card 1: Pillow shapes */}
-              <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: 850, marginBottom: '0.75rem', color: '#0f172a' }}>1. Pillow 도형 합성 데이터셋 평가</h3>
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: '1.5', marginBottom: '1.5rem' }}>
-                  동그라미, 세모, 네모, 별 등 10가지 색상의 합성 이미지를 메모리에서 실시간 렌더링하고, 노이즈 쿼리로 검색을 시도하여 CLIP/SBERT 모델의 핵심 정확도를 벤치마크합니다.
-                </p>
-
+            {/* Benchmark Sub-Tabs */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '2rem', backgroundColor: '#f8fafc', padding: '0.375rem', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+              {[
+                { id: 'animal', label: '🐾 동물 데이터셋', color: '#16a34a' },
+                { id: 'synthetic', label: '🔷 합성 도형', color: '#0284c7' },
+                { id: 'gemini', label: '🤖 Gemini 시딩', color: '#6366f1' },
+                { id: 'custom', label: '📁 커스텀 ZIP', color: '#e60023' },
+              ].map(t => (
                 <button
-                  onClick={handleRunSyntheticBenchmark}
-                  disabled={syntheticLoading}
+                  key={t.id}
+                  onClick={() => setBenchmarkSubTab(t.id as any)}
                   style={{
-                    backgroundColor: '#0284c7',
-                    color: 'white',
-                    padding: '0.75rem 1.5rem',
+                    flex: 1,
+                    padding: '0.625rem 1rem',
                     borderRadius: '12px',
+                    border: 'none',
                     fontWeight: 800,
                     fontSize: '0.875rem',
-                    border: 'none',
                     cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
+                    backgroundColor: benchmarkSubTab === t.id ? 'white' : 'transparent',
+                    color: benchmarkSubTab === t.id ? t.color : '#94a3b8',
+                    boxShadow: benchmarkSubTab === t.id ? '0 1px 4px rgba(0,0,0,0.08)' : 'none',
+                    transition: 'all 0.15s'
                   }}
-                >
-                  {syntheticLoading ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
-                  도형 합성 데이터셋 벤치마크 실행
-                </button>
+                >{t.label}</button>
+              ))}
+            </div>
+
+            {/* Animal Dataset Sub-Tab */}
+            {benchmarkSubTab === 'animal' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
+                    <div>
+                      <h3 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>동물 분류 데이터셋 평가 (DB 실시간 주입)</h3>
+                      <p style={{ fontSize: '0.9375rem', color: '#64748b', marginTop: '0.375rem', lineHeight: '1.5' }}>
+                        Wikimedia 공용 이미지 20종(개, 고양이, 호랑이, 사자, 늑대, 독수리 등)을 실제 DB에 주입하고 Redis HNSW 기반 Recall·NDCG를 측정합니다.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleRunAnimalBenchmark}
+                      disabled={animalLoading}
+                      style={{ backgroundColor: '#16a34a', color: 'white', padding: '0.875rem 1.75rem', borderRadius: '14px', fontWeight: 800, fontSize: '0.9375rem', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.625rem', flexShrink: 0, whiteSpace: 'nowrap' }}
+                    >
+                      {animalLoading ? <RefreshCw size={18} className="animate-spin" /> : <Play size={18} />}
+                      DB 주입 및 벤치마크 실행
+                    </button>
+                  </div>
+
+                  {animalLoading && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4rem', flexDirection: 'column', gap: '1rem' }}>
+                      <RefreshCw size={40} className="animate-spin" style={{ color: '#16a34a' }} />
+                      <p style={{ fontWeight: 700, color: '#64748b' }}>20종 동물 이미지 다운로드 및 Redis 인덱싱 중...</p>
+                    </div>
+                  )}
+
+                  {animalResult && (
+                    <>
+                      {/* Big Metric Cards */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                        {['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'].map(m => (
+                          <div key={m} style={{ borderRadius: '20px', padding: '1.75rem 1.25rem', textAlign: 'center', border: '2px solid #bbf7d0', background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)' }}>
+                            <p style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#166534', marginBottom: '0.75rem', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Text→Image {m}</p>
+                            <p style={{ fontSize: '3rem', fontWeight: 900, color: '#15803d', lineHeight: 1, letterSpacing: '-0.04em' }}>
+                              {animalResult.text_to_image[m] !== undefined ? `${(animalResult.text_to_image[m] * 100).toFixed(0)}` : '—'}
+                            </p>
+                            <p style={{ fontSize: '1rem', fontWeight: 700, color: '#16a34a', marginTop: '0.25rem' }}>%</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                        {['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'].map(m => (
+                          <div key={m} style={{ borderRadius: '20px', padding: '1.75rem 1.25rem', textAlign: 'center', border: '2px solid #bae6fd', background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)' }}>
+                            <p style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#075985', marginBottom: '0.75rem', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Image→Image {m}</p>
+                            <p style={{ fontSize: '3rem', fontWeight: 900, color: '#0369a1', lineHeight: 1, letterSpacing: '-0.04em' }}>
+                              {animalResult.image_to_image[m] !== undefined ? `${(animalResult.image_to_image[m] * 100).toFixed(0)}` : '—'}
+                            </p>
+                            <p style={{ fontSize: '1rem', fontWeight: 700, color: '#0284c7', marginTop: '0.25rem' }}>%</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Detail table */}
+                      <div>
+                        <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a', marginBottom: '1rem' }}>
+                          개별 동물 매칭 순위 ({animalResult.sample_size}종)
+                        </h4>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
+                          {animalResult.details.map(det => (
+                            <div key={det.name} style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', backgroundColor: '#f8fafc', padding: '0.875rem', borderRadius: '14px', border: '1px solid #e2e8f0' }}>
+                              <img src={det.url} alt={det.name} style={{ width: '52px', height: '52px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0 }} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='52' height='52' viewBox='0 0 52 52'><rect width='52' height='52' rx='10' fill='%23bae6fd'/><text x='50%' y='60%' font-size='14' font-weight='bold' text-anchor='middle' fill='%230284c7'>?</text></svg>"; }} />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <p style={{ fontSize: '0.9375rem', fontWeight: 800, textTransform: 'capitalize', color: '#0f172a' }}>{det.name}</p>
+                                <p style={{ fontSize: '0.75rem', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '0.125rem' }}>{det.caption}</p>
+                              </div>
+                              <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: '8px', backgroundColor: det.text_rank === 1 ? '#dcfce7' : '#fff7ed', color: det.text_rank === 1 ? '#15803d' : '#c2410c' }}>
+                                  텍스트 {det.text_rank === 999 ? 'N/A' : `${det.text_rank}위`}
+                                </span>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: '8px', backgroundColor: det.image_rank === 1 ? '#dbeafe' : '#fff7ed', color: det.image_rank === 1 ? '#1d4ed8' : '#c2410c' }}>
+                                  이미지 {det.image_rank === 999 ? 'N/A' : `${det.image_rank}위`}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Synthetic Sub-Tab */}
+            {benchmarkSubTab === 'synthetic' && (
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>Pillow 합성 도형 데이터셋 평가</h3>
+                    <p style={{ fontSize: '0.9375rem', color: '#64748b', marginTop: '0.375rem', lineHeight: '1.5' }}>
+                      동그라미·세모·네모·별 등 10가지 색상의 합성 이미지를 메모리에서 실시간 렌더링하고, 노이즈 쿼리로 검색하여 CLIP/SBERT 핵심 정확도를 측정합니다.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleRunSyntheticBenchmark}
+                    disabled={syntheticLoading}
+                    style={{ backgroundColor: '#0284c7', color: 'white', padding: '0.875rem 1.75rem', borderRadius: '14px', fontWeight: 800, fontSize: '0.9375rem', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.625rem', flexShrink: 0 }}
+                  >
+                    {syntheticLoading ? <RefreshCw size={18} className="animate-spin" /> : <Play size={18} />}
+                    합성 벤치마크 실행
+                  </button>
+                </div>
+
+                {syntheticLoading && (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4rem', flexDirection: 'column', gap: '1rem' }}>
+                    <RefreshCw size={40} className="animate-spin" style={{ color: '#0284c7' }} />
+                    <p style={{ fontWeight: 700, color: '#64748b' }}>합성 이미지 렌더링 및 임베딩 평가 중...</p>
+                  </div>
+                )}
 
                 {syntheticResult && (
-                  <div style={{ marginTop: '2rem', backgroundColor: '#f8fafc', padding: '1.5rem', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#0369a1', fontWeight: 800, fontSize: '0.9375rem', marginBottom: '1rem' }}>
-                      <CheckCircle2 size={18} /> 합성 데이터 벤치마크 완료 (샘플 수: {syntheticResult.sample_size}개)
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                      <div>
-                        <span style={{ fontWeight: 800, fontSize: '0.8125rem', color: '#475569' }}>의미론적 텍스트 검색 정확도 (Text-to-Image)</span>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', marginTop: '0.25rem' }}>
-                          {['Recall@1', 'Recall@3', 'NDCG@3'].map(m => (
-                            <div key={m} style={{ backgroundColor: 'white', border: '1px solid #cbd5e1', padding: '0.5rem', borderRadius: '8px', textAlign: 'center' }}>
-                              <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700 }}>{m}</p>
-                              <p style={{ fontSize: '15px', fontWeight: 900, color: '#0284c7' }}>{(syntheticResult.text_to_image[m] * 100).toFixed(1)}%</p>
-                            </div>
-                          ))}
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginBottom: '1.5rem' }}>
+                      {['Recall@1', 'Recall@3', 'NDCG@3'].map(m => (
+                        <div key={m} style={{ borderRadius: '20px', padding: '1.75rem 1.25rem', textAlign: 'center', border: '2px solid #bae6fd', background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)' }}>
+                          <p style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#075985', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Text→Image {m}</p>
+                          <p style={{ fontSize: '3.5rem', fontWeight: 900, color: '#0369a1', lineHeight: 1, letterSpacing: '-0.04em' }}>{(syntheticResult.text_to_image[m] * 100).toFixed(0)}</p>
+                          <p style={{ fontSize: '1rem', fontWeight: 700, color: '#0284c7', marginTop: '0.25rem' }}>%</p>
                         </div>
-                      </div>
-
-                      <div>
-                        <span style={{ fontWeight: 800, fontSize: '0.8125rem', color: '#475569' }}>시각적 이미지 유사 검색 정확도 (Image-to-Image)</span>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', marginTop: '0.25rem' }}>
-                          {['Recall@1', 'Recall@3', 'NDCG@3'].map(m => (
-                            <div key={m} style={{ backgroundColor: 'white', border: '1px solid #cbd5e1', padding: '0.5rem', borderRadius: '8px', textAlign: 'center' }}>
-                              <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700 }}>{m}</p>
-                              <p style={{ fontSize: '15px', fontWeight: 900, color: 'var(--primary-red)' }}>{(syntheticResult.image_to_image[m] * 100).toFixed(1)}%</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
+                      ))}
                     </div>
-                  </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                      {['Recall@1', 'Recall@3', 'NDCG@3'].map(m => (
+                        <div key={m} style={{ borderRadius: '20px', padding: '1.75rem 1.25rem', textAlign: 'center', border: '2px solid #fecaca', background: 'linear-gradient(135deg, #fff5f5 0%, #fee2e2 100%)' }}>
+                          <p style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#991b1b', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Image→Image {m}</p>
+                          <p style={{ fontSize: '3.5rem', fontWeight: 900, color: '#b91c1c', lineHeight: 1, letterSpacing: '-0.04em' }}>{(syntheticResult.image_to_image[m] * 100).toFixed(0)}</p>
+                          <p style={{ fontSize: '1rem', fontWeight: 700, color: '#e60023', marginTop: '0.25rem' }}>%</p>
+                        </div>
+                      ))}
+                    </div>
+                    <p style={{ marginTop: '1.5rem', fontSize: '0.875rem', color: '#94a3b8', textAlign: 'center' }}>샘플 수: {syntheticResult.sample_size}개</p>
+                  </>
                 )}
               </div>
+            )}
 
-              {/* Card 2: Famous Animal Dataset (DB) Benchmark */}
+            {/* Gemini Sub-Tab */}
+            {benchmarkSubTab === 'gemini' && (
               <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: 850, marginBottom: '0.75rem', color: '#0f172a' }}>2. 유명 동물분류 데이터셋 평가 (DB 주입)</h3>
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: '1.5', marginBottom: '1.5rem' }}>
-                  Wikimedia 공용 및 로컬 Fallback을 기반으로 한 10종의 동물 이미지(개, 고양이, 호랑이, 사자 등)를 실제 DB의 content, post, media 스키마에 주입하고, Redis HNSW 및 Postgres 결합 정확도(Recall, NDCG)를 실시간 평가합니다.
-                </p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>Gemini 가상 페르소나 & 좋아요 주입</h3>
+                    <p style={{ fontSize: '0.9375rem', color: '#64748b', marginTop: '0.375rem', lineHeight: '1.5', maxWidth: '600px' }}>
+                      Gemini-2.5-Flash LLM이 고양이 집사, 운동 매니아, 맛집 탐방가 등 개성 넘치는 50개의 가상 인물(Persona)을 생성하고, 각자의 관심사에 맞는 포스트에 좋아요를 남깁니다.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleRunGeminiSeeding}
+                    disabled={geminiLoading}
+                    style={{ backgroundColor: '#6366f1', color: 'white', padding: '0.875rem 1.75rem', borderRadius: '14px', fontWeight: 800, fontSize: '0.9375rem', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.625rem', flexShrink: 0 }}
+                  >
+                    {geminiLoading ? <RefreshCw size={18} className="animate-spin" /> : <Wand2 size={18} />}
+                    시뮬레이션 데이터 주입 시작
+                  </button>
+                </div>
 
-                <button
-                  onClick={handleRunAnimalBenchmark}
-                  disabled={animalLoading}
-                  style={{
-                    backgroundColor: '#16a34a',
-                    color: 'white',
-                    padding: '0.75rem 1.5rem',
-                    borderRadius: '12px',
-                    fontWeight: 800,
-                    fontSize: '0.875rem',
-                    border: 'none',
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
-                  }}
-                >
-                  {animalLoading ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
-                  실시간 DB 주입 및 벤치마크 실행
-                </button>
-
-                {animalResult && (
-                  <div style={{ marginTop: '2rem', backgroundColor: '#f0fdf4', padding: '1.5rem', borderRadius: '16px', border: '1px solid #bbf7d0' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#166534', fontWeight: 800, fontSize: '0.9375rem', marginBottom: '1.5rem' }}>
-                      <CheckCircle2 size={18} /> 동물 분류 데이터 벤치마크 완료 (샘플 수: {animalResult.sample_size}개)
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                      <div>
-                        <span style={{ fontWeight: 800, fontSize: '0.8125rem', color: '#1e293b' }}>의미론적 텍스트 검색 정확도 (Text-to-Image)</span>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.35rem', marginTop: '0.35rem' }}>
-                          {['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'].map(m => (
-                            <div key={m} style={{ backgroundColor: 'white', border: '1px solid #bbf7d0', padding: '0.5rem 0.25rem', borderRadius: '8px', textAlign: 'center' }}>
-                              <p style={{ fontSize: '9px', color: '#64748b', fontWeight: 700 }}>{m}</p>
-                              <p style={{ fontSize: '13px', fontWeight: 900, color: '#16a34a' }}>
-                                {animalResult.text_to_image[m] !== undefined ? `${(animalResult.text_to_image[m] * 100).toFixed(1)}%` : '0.0%'}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <span style={{ fontWeight: 800, fontSize: '0.8125rem', color: '#1e293b' }}>시각적 이미지 검색 정확도 (Image-to-Image)</span>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.35rem', marginTop: '0.35rem' }}>
-                          {['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'].map(m => (
-                            <div key={m} style={{ backgroundColor: 'white', border: '1px solid #bbf7d0', padding: '0.5rem 0.25rem', borderRadius: '8px', textAlign: 'center' }}>
-                              <p style={{ fontSize: '9px', color: '#64748b', fontWeight: 700 }}>{m}</p>
-                              <p style={{ fontSize: '13px', fontWeight: 900, color: '#16a34a' }}>
-                                {animalResult.image_to_image[m] !== undefined ? `${(animalResult.image_to_image[m] * 100).toFixed(1)}%` : '0.0%'}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: '0.5rem' }}>
-                        <span style={{ fontWeight: 800, fontSize: '0.8125rem', color: '#1e293b', display: 'block', marginBottom: '0.5rem' }}>주입된 동물 및 자가 매칭 검색 순위</span>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '200px', overflowY: 'auto', paddingRight: '0.25rem' }}>
-                          {animalResult.details.map(det => (
-                            <div key={det.name} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', backgroundColor: 'white', padding: '0.5rem', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
-                              <img src={det.url} alt={det.name} style={{ width: '36px', height: '36px', borderRadius: '6px', objectFit: 'cover', flexShrink: 0 }} onError={(e) => {
-                                (e.target as HTMLImageElement).src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='36' height='36' viewBox='0 0 36 36'><rect width='36' height='36' fill='%23bae6fd'/><text x='50%' y='60%' font-size='10' font-weight='bold' text-anchor='middle' fill='%230284c7'>PA</text></svg>";
-                              }} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <p style={{ fontSize: '0.8125rem', fontWeight: 800, textTransform: 'capitalize', color: '#0f172a' }}>{det.name}</p>
-                                <p style={{ fontSize: '10px', color: '#64748b', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{det.caption}</p>
-                              </div>
-                              <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                                <p style={{ fontSize: '9px', color: '#475569' }}>텍스트: <strong style={{ color: det.text_rank === 1 ? '#16a34a' : '#ea580c' }}>{det.text_rank === 999 ? 'N/A' : `${det.text_rank}위`}</strong></p>
-                                <p style={{ fontSize: '9px', color: '#475569' }}>이미지: <strong style={{ color: det.image_rank === 1 ? '#16a34a' : '#ea580c' }}>{det.image_rank === 999 ? 'N/A' : `${det.image_rank}위`}</strong></p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
+                {geminiLoading && (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4rem', flexDirection: 'column', gap: '1rem' }}>
+                    <RefreshCw size={40} className="animate-spin" style={{ color: '#6366f1' }} />
+                    <p style={{ fontWeight: 700, color: '#64748b' }}>Gemini API로 가상 페르소나 생성 및 좋아요 주입 중...</p>
                   </div>
                 )}
+
+                {geminiResult && (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                      <div style={{ borderRadius: '20px', padding: '2rem', textAlign: 'center', border: '2px solid #ddd6fe', background: 'linear-gradient(135deg, #faf5ff 0%, #ede9fe 100%)' }}>
+                        <p style={{ fontSize: '0.875rem', fontWeight: 700, color: '#6d28d9', marginBottom: '0.75rem' }}>총 주입된 좋아요</p>
+                        <p style={{ fontSize: '4rem', fontWeight: 900, color: '#5b21b6', lineHeight: 1, letterSpacing: '-0.04em' }}>{geminiResult.total_likes_seeded?.toLocaleString() ?? '—'}</p>
+                        <p style={{ fontSize: '1rem', fontWeight: 700, color: '#7c3aed', marginTop: '0.25rem' }}>개</p>
+                      </div>
+                      <div style={{ borderRadius: '20px', padding: '2rem', textAlign: 'center', border: '2px solid #ddd6fe', background: 'linear-gradient(135deg, #faf5ff 0%, #ede9fe 100%)' }}>
+                        <p style={{ fontSize: '0.875rem', fontWeight: 700, color: '#6d28d9', marginBottom: '0.75rem' }}>생성된 페르소나 수</p>
+                        <p style={{ fontSize: '4rem', fontWeight: 900, color: '#5b21b6', lineHeight: 1, letterSpacing: '-0.04em' }}>{geminiResult.details?.length ?? '—'}</p>
+                        <p style={{ fontSize: '1rem', fontWeight: 700, color: '#7c3aed', marginTop: '0.25rem' }}>명</p>
+                      </div>
+                    </div>
+                    <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a', marginBottom: '1rem' }}>페르소나별 좋아요 분포</h4>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '0.75rem' }}>
+                      {geminiResult.details?.map((p: any) => (
+                        <div key={p.name} style={{ display: 'flex', justifyContent: 'space-between', backgroundColor: '#f5f3ff', border: '1px solid #ddd6fe', padding: '0.875rem 1.125rem', borderRadius: '14px', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.875rem', fontWeight: 800, color: '#4c1d95' }}>{p.name}</span>
+                          <span style={{ fontSize: '0.9375rem', fontWeight: 900, color: '#6d28d9', backgroundColor: '#ede9fe', padding: '4px 12px', borderRadius: '20px' }}>❤️ {p.liked_count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
+            )}
 
-              {/* Card 3: Custom Dataset */}
+            {/* Custom ZIP Sub-Tab */}
+            {benchmarkSubTab === 'custom' && (
               <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: 850, marginBottom: '0.75rem', color: '#0f172a' }}>3. 커스텀 데이터셋 평가 (ZIP 파일)</h3>
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: '1.5', marginBottom: '1.5rem' }}>
-                  이미지들이 압축된 ZIP 파일과 이미지-라벨 매칭 어노테이션 정보가 담긴 <code>dataset.json</code> 파일을 업로드하여 정확도를 정밀 분석합니다.
-                </p>
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <h3 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>커스텀 데이터셋 평가 (ZIP 업로드)</h3>
+                  <p style={{ fontSize: '0.9375rem', color: '#64748b', marginTop: '0.375rem', lineHeight: '1.5' }}>
+                    직접 수집한 이미지와 캡션 어노테이션이 담긴 ZIP을 업로드하여 검색 정확도를 측정합니다.
+                  </p>
+                </div>
 
-                <div style={{ backgroundColor: '#f0fdf4', padding: '1rem', borderRadius: '12px', border: '1px solid #bbf7d0', fontSize: '0.8125rem', color: '#166534', marginBottom: '1.5rem', lineHeight: '1.4' }}>
-                  <strong>📂 ZIP 요구 규격:</strong>
-                  <ul style={{ listStyleType: 'disc', paddingLeft: '1.25rem', marginTop: '0.25rem' }}>
-                    <li>루트에 <code>dataset.json</code> 필수 포함</li>
-                    <li>dataset.json 포맷: <code>{`[{"filename": "car.jpg", "caption": "luxury red car"}]`}</code></li>
-                  </ul>
+                <div style={{ backgroundColor: '#f0fdf4', padding: '1rem 1.25rem', borderRadius: '14px', border: '1px solid #bbf7d0', fontSize: '0.875rem', color: '#166534', marginBottom: '1.5rem', lineHeight: '1.5' }}>
+                  <strong>📂 ZIP 요구 규격</strong> — 루트에 <code style={{ backgroundColor: '#dcfce7', padding: '1px 6px', borderRadius: '4px' }}>dataset.json</code> 필수 포함.
+                  포맷: <code style={{ backgroundColor: '#dcfce7', padding: '1px 6px', borderRadius: '4px' }}>{`[{"filename": "car.jpg", "caption": "luxury red car"}]`}</code>
                 </div>
 
                 <div
@@ -925,142 +994,59 @@ const DevConsole: React.FC = () => {
                   onDragLeave={handleZipDrag}
                   onDrop={handleZipDrop}
                   onClick={() => zipInputRef.current?.click()}
-                  style={{
-                    border: isDragActive ? '2px dashed var(--primary-red)' : '2px dashed #cbd5e1',
-                    borderRadius: '16px',
-                    padding: '2.5rem 1.5rem',
-                    textAlign: 'center',
-                    cursor: 'pointer',
-                    backgroundColor: isDragActive ? '#fff5f5' : '#f8fafc',
-                    marginBottom: '1.5rem'
-                  }}
+                  style={{ border: isDragActive ? '2px dashed var(--primary-red)' : '2px dashed #cbd5e1', borderRadius: '20px', padding: '3rem 2rem', textAlign: 'center', cursor: 'pointer', backgroundColor: isDragActive ? '#fff5f5' : '#f8fafc', marginBottom: '1.5rem', transition: 'all 0.15s' }}
                 >
-                  <input 
-                    type="file" 
-                    ref={zipInputRef} 
-                    onChange={handleZipSelect} 
-                    accept=".zip" 
-                    style={{ display: 'none' }} 
-                  />
-                  <Upload size={24} style={{ color: '#94a3b8', margin: '0 auto 0.5rem' }} />
-                  <span style={{ fontSize: '0.875rem', fontWeight: 800, color: '#475569', display: 'block' }}>
-                    {customZipName ? customZipName : '평가용 ZIP 파일 드롭 또는 클릭선택'}
+                  <input type="file" ref={zipInputRef} onChange={handleZipSelect} accept=".zip" style={{ display: 'none' }} />
+                  <Upload size={32} style={{ color: isDragActive ? 'var(--primary-red)' : '#94a3b8', margin: '0 auto 0.75rem' }} />
+                  <span style={{ fontSize: '1rem', fontWeight: 800, color: isDragActive ? 'var(--primary-red)' : '#475569', display: 'block' }}>
+                    {customZipName ? `📦 ${customZipName}` : '평가용 ZIP 파일을 드롭하거나 클릭해서 선택'}
                   </span>
                 </div>
 
                 <button
                   onClick={handleRunCustomBenchmark}
                   disabled={customLoading || !customZip}
-                  style={{
-                    backgroundColor: 'var(--primary-red)',
-                    color: 'white',
-                    padding: '0.75rem 1.5rem',
-                    borderRadius: '12px',
-                    fontWeight: 800,
-                    fontSize: '0.875rem',
-                    border: 'none',
-                    cursor: customZip ? 'pointer' : 'not-allowed',
-                    opacity: customZip ? 1 : 0.5,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
-                  }}
+                  style={{ backgroundColor: 'var(--primary-red)', color: 'white', padding: '0.875rem 1.75rem', borderRadius: '14px', fontWeight: 800, fontSize: '0.9375rem', border: 'none', cursor: customZip ? 'pointer' : 'not-allowed', opacity: customZip ? 1 : 0.5, display: 'inline-flex', alignItems: 'center', gap: '0.625rem' }}
                 >
-                  {customLoading ? <RefreshCw size={16} className="animate-spin" /> : <Play size={16} />}
+                  {customLoading ? <RefreshCw size={18} className="animate-spin" /> : <Play size={18} />}
                   커스텀 데이터셋 평가 시작
                 </button>
 
                 {customResult && (
-                  <div style={{ marginTop: '2rem', backgroundColor: '#f8fafc', padding: '1.5rem', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+                  <div style={{ marginTop: '2rem' }}>
                     {customResult.status === 'success' ? (
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#166534', fontWeight: 800, fontSize: '0.9375rem', marginBottom: '1rem' }}>
-                          <CheckCircle2 size={18} /> 벤치마크 완료 (샘플 수: {customResult.sample_size}개)
-                        </div>
-
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', backgroundColor: 'white', border: '1px solid #e2e8f0', padding: '0.75rem 1rem', borderRadius: '10px', alignItems: 'center' }}>
-                            <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#475569' }}>평균 비주얼 교차 유사도 (Contrast)</span>
-                            <span style={{ fontSize: '14px', fontWeight: 900, color: '#166534' }}>{(customResult.average_cross_image_similarity * 100).toFixed(1)}%</span>
+                      <>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '1rem' }}>
+                          <div style={{ borderRadius: '20px', padding: '1.5rem', textAlign: 'center', border: '2px solid #e2e8f0', backgroundColor: '#f8fafc', gridColumn: 'span 1' }}>
+                            <p style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', marginBottom: '0.5rem' }}>교차 유사도</p>
+                            <p style={{ fontSize: '2.5rem', fontWeight: 900, color: '#0f172a', lineHeight: 1 }}>{(customResult.average_cross_image_similarity * 100).toFixed(0)}</p>
+                            <p style={{ fontSize: '0.875rem', color: '#94a3b8', fontWeight: 700 }}>%</p>
                           </div>
-
-                          <div>
-                            <span style={{ fontWeight: 800, fontSize: '0.8125rem', color: '#475569' }}>텍스트 검색 재현율 (Text-to-Image)</span>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.5rem', marginTop: '0.25rem' }}>
-                              {['Recall@1', 'Recall@3', 'NDCG@3'].map(m => (
-                                <div key={m} style={{ backgroundColor: 'white', border: '1px solid #cbd5e1', padding: '0.5rem', borderRadius: '8px', textAlign: 'center' }}>
-                                  <p style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 700 }}>{m}</p>
-                                  <p style={{ fontSize: '15px', fontWeight: 900, color: 'var(--primary-red)' }}>
-                                    {customResult.text_to_image[m] !== undefined ? `${(customResult.text_to_image[m] * 100).toFixed(1)}%` : 'N/A'}
-                                  </p>
-                                </div>
-                              ))}
+                          {['Recall@1', 'Recall@3', 'NDCG@3'].map(m => (
+                            <div key={m} style={{ borderRadius: '20px', padding: '1.5rem', textAlign: 'center', border: '2px solid #fecaca', background: 'linear-gradient(135deg, #fff5f5 0%, #fee2e2 100%)' }}>
+                              <p style={{ fontSize: '0.75rem', fontWeight: 700, color: '#991b1b', marginBottom: '0.5rem', textTransform: 'uppercase' }}>{m}</p>
+                              <p style={{ fontSize: '2.5rem', fontWeight: 900, color: '#b91c1c', lineHeight: 1 }}>
+                                {customResult.text_to_image[m] !== undefined ? (customResult.text_to_image[m] * 100).toFixed(0) : '—'}
+                              </p>
+                              <p style={{ fontSize: '0.875rem', color: '#e60023', fontWeight: 700 }}>%</p>
                             </div>
-                          </div>
+                          ))}
                         </div>
-                      </div>
+                        <p style={{ fontSize: '0.875rem', color: '#94a3b8', textAlign: 'center' }}>샘플 수: {customResult.sample_size}개</p>
+                      </>
                     ) : (
-                      <div style={{ color: '#ef4444', display: 'flex', gap: '0.5rem', alignItems: 'start' }}>
-                        <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+                      <div style={{ color: '#ef4444', display: 'flex', gap: '0.75rem', alignItems: 'flex-start', backgroundColor: '#fff5f5', padding: '1.25rem', borderRadius: '14px', border: '1px solid #fecaca' }}>
+                        <AlertCircle size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
                         <div>
-                          <span style={{ fontWeight: 800 }}>오류 발생:</span>
-                          <p style={{ fontSize: '0.8125rem', marginTop: '0.25rem' }}>{customResult.message}</p>
+                          <span style={{ fontWeight: 800, fontSize: '0.9375rem' }}>오류 발생</span>
+                          <p style={{ fontSize: '0.875rem', marginTop: '0.25rem' }}>{customResult.message}</p>
                         </div>
                       </div>
                     )}
                   </div>
                 )}
               </div>
-
-              {/* Card 4: Gemini Virtual Persona Seeding */}
-              <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
-                <h3 style={{ fontSize: '1.25rem', fontWeight: 850, marginBottom: '0.75rem', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  🤖 제미나이 가상 페르소나 & 좋아요 주입
-                </h3>
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', lineHeight: '1.5', marginBottom: '1.5rem' }}>
-                  Gemini-2.5-Flash LLM을 사용하여 고양이를 좋아하는 사람, 운동 매니아, 맛집 탐방가 등 10가지의 개성 넘치는 가상 인물(Persona)을 생성합니다. 각 페스소나는 피드의 포스트 내용을 정교하게 분석하여, 자신의 관심사에 정확히 매칭되는 포스트들에 좋아요(Likes) 반응을 남깁니다. 시뮬레이션 기반 추천 결과를 더욱 역동적으로 테스트할 수 있습니다.
-                </p>
-
-                <button
-                  onClick={handleRunGeminiSeeding}
-                  disabled={geminiLoading}
-                  style={{
-                    backgroundColor: '#6366f1',
-                    color: 'white',
-                    padding: '0.75rem 1.5rem',
-                    borderRadius: '12px',
-                    fontWeight: 800,
-                    fontSize: '0.875rem',
-                    border: 'none',
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
-                  }}
-                >
-                  {geminiLoading ? <RefreshCw size={16} className="animate-spin" /> : <Wand2 size={16} />}
-                  제미나이 시뮬레이션 데이터 주입 시작 (1회성)
-                </button>
-
-                {geminiResult && (
-                  <div style={{ marginTop: '2rem', backgroundColor: '#f5f3ff', padding: '1.5rem', borderRadius: '16px', border: '1px solid #ddd6fe' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#6d28d9', fontWeight: 800, fontSize: '0.9375rem', marginBottom: '1rem' }}>
-                      <CheckCircle2 size={18} /> 제미나이 가상 페르소나 시딩 성공! (총 {geminiResult.total_likes_seeded}개의 좋아요 주입됨)
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '200px', overflowY: 'auto' }}>
-                      {geminiResult.details?.map((p: any) => (
-                        <div key={p.name} style={{ display: 'flex', justifyContent: 'space-between', backgroundColor: 'white', border: '1px solid #ddd6fe', padding: '0.75rem 1rem', borderRadius: '10px', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.8125rem', fontWeight: 800, color: '#4c1d95' }}>{p.name}</span>
-                          <span style={{ fontSize: '12px', fontWeight: 700, color: '#6d28d9', backgroundColor: '#ede9fe', padding: '2px 8px', borderRadius: '20px' }}>좋아요 {p.liked_count}개 생성됨</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-            </div>
+            )}
           </motion.div>
         )}
 

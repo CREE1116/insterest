@@ -511,7 +511,7 @@ class BenchmarkService:
 
         return {
             "status": "success",
-            "dataset_name": "Famous Animal Classification Dataset (10 Classes)",
+            "dataset_name": "Famous Animal Classification Dataset (20 Classes)",
             "sample_size": len(details),
             "text_to_image": t2i_metrics,
             "image_to_image": i2i_metrics,
@@ -578,6 +578,66 @@ ANIMAL_DATASET = [
         "url": "https://upload.wikimedia.org/wikipedia/commons/4/43/Bonobo_sitting.jpg",
         "caption": "a black bonobo monkey sitting on the ground looking forward with human like eyes",
         "hashtags": ["monkey", "ape", "bonobo", "animal"]
+    },
+    {
+        "name": "wolf",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/5/5f/Kolm%C3%A5rden_Wolf.jpg",
+        "caption": "a grey wolf standing in a snowy winter forest looking alert with sharp eyes",
+        "hashtags": ["wolf", "predator", "wildlife", "forest"]
+    },
+    {
+        "name": "fox",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/3/30/Vulpes_vulpes_ssp_fulvus.jpg",
+        "caption": "a beautiful red fox sitting on green grass looking sideways with a bushy tail",
+        "hashtags": ["fox", "redFox", "wildlife", "animal"]
+    },
+    {
+        "name": "eagle",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/1/1a/24701-nature-natural-beauty.jpg",
+        "caption": "a majestic bald eagle soaring high in the blue sky with wings fully spread",
+        "hashtags": ["eagle", "bird", "raptor", "wildlife"]
+    },
+    {
+        "name": "penguin",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/0/08/South_Geogia_Elephant_Seals_and_Penguins.jpg",
+        "caption": "a group of emperor penguins huddled together on the white snow in antarctica",
+        "hashtags": ["penguin", "arctic", "bird", "animal"]
+    },
+    {
+        "name": "dolphin",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/1/10/Tursiops_truncatus_01.jpg",
+        "caption": "a bottlenose dolphin leaping gracefully out of the turquoise ocean water",
+        "hashtags": ["dolphin", "ocean", "marine", "animal"]
+    },
+    {
+        "name": "horse",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/d/d9/Collage_of_Nine_Dogs.jpg",
+        "caption": "a white horse galloping freely in a wide open green meadow at sunset",
+        "hashtags": ["horse", "equine", "gallop", "animal"]
+    },
+    {
+        "name": "gorilla",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Gorilla_gorilla_gorilla01.jpg",
+        "caption": "a massive silverback gorilla sitting in the tropical rainforest staring intensely",
+        "hashtags": ["gorilla", "ape", "primate", "wildlife"]
+    },
+    {
+        "name": "cheetah",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/0/09/TheCheethcat.jpg",
+        "caption": "a spotted cheetah running at full speed across the open african savanna grassland",
+        "hashtags": ["cheetah", "fastAnimal", "wildcat", "africa"]
+    },
+    {
+        "name": "flamingo",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b2/Flamingos_Laguna_Colorada.jpg",
+        "caption": "a flock of pink flamingos standing in a shallow red lake at high altitude",
+        "hashtags": ["flamingo", "bird", "pink", "wildlife"]
+    },
+    {
+        "name": "crocodile",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg",
+        "caption": "a large nile crocodile basking in the sun on a muddy riverbank with its mouth open",
+        "hashtags": ["crocodile", "reptile", "predator", "wildlife"]
     }
 ]
 
