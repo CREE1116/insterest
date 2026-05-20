@@ -7,7 +7,7 @@ import {
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, Cell, PieChart, Pie
+  ResponsiveContainer
 } from 'recharts';
 import client from '../api/client';
 
