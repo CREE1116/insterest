@@ -22,35 +22,30 @@ async def trigger_training(db: AsyncSession = Depends(get_db)):
 
 @router.post("/backfill")
 async def trigger_backfill(db: AsyncSession = Depends(get_db)):
-    """
-    모든 포스트를 다시 벡터화(Re-indexing)하도록 요청합니다.
-    """
+    """모든 포스트를 CLIP 512-dim으로 재인덱싱합니다."""
     try:
         await intel_service.backfill_all_posts(db)
-        return {"status": "success", "message": "128-dim Backfill task started in background."}
+        return {"status": "success", "message": "CLIP 512-dim backfill complete."}
     except Exception as e:
         logger.error(f"❌ Failed to trigger backfill: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/status")
 async def get_training_status():
-    """
-    현재 학습 상태 및 마지막 성공 시간을 반환합니다. (현재는 스켈레톤 상태)
-    """
+    """현재 학습 상태 및 Redis 인덱스 정보 반환."""
+    from app.ml.vector_store import vector_store
     return {
         "status": "ready",
-        "last_trained": "Not tracked yet",
-        "engine": "UnifiedDiscoveryEngine"
+        "engine": "CLIP-unified UnifiedDiscoveryEngine",
+        "redis_vector_count": vector_store.count(),
     }
 
 @router.get("")
-async def run_benchmark(db: AsyncSession = Depends(get_db)):
-    """
-    정량적 벤치마크(Recall, NDCG)를 실행하고 결과를 반환합니다.
-    """
+async def run_offline_eval(db: AsyncSession = Depends(get_db)):
+    """오프라인 NDCG/Recall 평가를 실행합니다."""
     try:
-        results = await intel_service.run_quantitative_benchmark(db)
+        results = await intel_service.evaluate_offline(db)
         return results
     except Exception as e:
-        logger.error(f"❌ Benchmark failed: {e}")
+        logger.error(f"❌ Evaluation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

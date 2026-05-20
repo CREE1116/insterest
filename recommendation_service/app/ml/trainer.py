@@ -29,21 +29,29 @@ class UnifiedDiscoveryTrainer:
         )
 
     def info_nce_loss(self, query_vecs: torch.Tensor, item_vecs: torch.Tensor) -> torch.Tensor:
-        """InfoNCE: query/user vector should be nearest its target item vector."""
+        """InfoNCE: query i must be nearest item i; all other rows are negatives.
+
+        item_vecs may contain extra hard negatives appended after the B positives.
+        Labels still point to diagonal (0..B-1).
+        """
         logits = torch.matmul(query_vecs, item_vecs.T) / self.temperature
         labels = torch.arange(query_vecs.size(0), device=query_vecs.device)
         return self.criterion(logits, labels)
 
     def train_step(
         self,
-        user_histories: torch.Tensor,       # [B, 10, 512]  pre-computed item embeddings
-        target_item_vecs: torch.Tensor,     # [B, 512]
-        query_clip_vecs: torch.Tensor,      # [B, 512]  CLIP text of target caption (for query masking)
+        user_histories: torch.Tensor,            # [B, 10, 512]
+        target_item_vecs: torch.Tensor,          # [B, 512]
+        query_clip_vecs: torch.Tensor,           # [B, 512]
+        extra_negatives: torch.Tensor = None,    # [M, 512] hard negatives from full item pool
     ) -> float:
         """
-        Train UserTower via InfoNCE.
-        50% of batches use query masking so the user tower also learns to recommend
-        without an explicit text query (pure preference-based retrieval).
+        UserTower InfoNCE with optional hard negatives.
+
+        Hard negatives (extra_negatives) are appended to the key matrix so the model
+        must distinguish the true positive from pool-level lookalikes — not just
+        random in-batch items.
+        50% query masking forces the user tower to work without an explicit query.
         """
         self.model.train()
         self.optimizer.zero_grad()
@@ -57,14 +65,21 @@ class UnifiedDiscoveryTrainer:
 
         discovery_vecs = self.model.discovery(query_vecs, user_vecs)       # [B, 512]
 
-        loss = self.info_nce_loss(discovery_vecs, target_item_vecs)
+        # Append hard negatives to the key matrix (labels still point to diagonal)
+        if extra_negatives is not None and extra_negatives.size(0) > 0:
+            key_vecs = torch.cat([target_item_vecs, extra_negatives.detach()], dim=0)
+        else:
+            key_vecs = target_item_vecs
+
+        loss = self.info_nce_loss(discovery_vecs, key_vecs)
         loss.backward()
         self.optimizer.step()
         return loss.item()
 
-    # Keep old name as alias so callers don't break immediately
-    def train_user_query_step(self, user_histories, target_item_vecs, caption_vecs_for_query):
-        return self.train_step(user_histories, target_item_vecs, caption_vecs_for_query)
+    def train_user_query_step(self, user_histories, target_item_vecs, caption_vecs_for_query,
+                              extra_negatives=None):
+        return self.train_step(user_histories, target_item_vecs, caption_vecs_for_query,
+                               extra_negatives)
 
     def save_model(self, path: str):
         import os

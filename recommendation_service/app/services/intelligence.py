@@ -37,8 +37,9 @@ class UnifiedIntelligenceService:
                        history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
         """
         검색 + 개인화 추천:
-        - 아이템 벡터는 Redis에 미리 저장된 128차원 벡터를 사용 (모델 재계산 없음)
-        - 쿼리/유저 벡터만 실시간 계산 후 Redis ANN 검색
+        - 아이템 벡터는 Redis HNSW 512-dim 인덱스 사용 (모델 재계산 없음)
+        - 쿼리/유저 벡터만 실시간 계산 후 ANN 검색
+        - 콜드스타트: 인기도 × 시간감쇠 트렌딩 폴백
         """
         from app.ml.vector_store import vector_store
         try:
@@ -100,15 +101,22 @@ class UnifiedIntelligenceService:
                 search_vec = None
 
             if search_vec is not None:
-                # Redis HNSW ANN 검색
-                result_ids = vector_store.search_knn(search_vec, k=limit + len(exclude_history_ids or []) + skip)
+                # Redis HNSW ANN 검색 — 충분한 후보 확보를 위해 2배 오버페치
+                k_fetch = (limit + len(exclude_history_ids or []) + skip) * 2 + 20
+                result_ids = vector_store.search_knn(search_vec, k=k_fetch)
                 exclude_set = set(str(i) for i in (exclude_history_ids or []))
                 filtered = [str(pid) for pid in result_ids if str(pid) not in exclude_set]
                 page = filtered[skip: skip + limit]
                 return [{"id": pid, "score": 1.0} for pid in page]
 
-            # Fallback: 최신순
-            stmt = text("SELECT id FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
+            # Fallback: 인기도 × 시간감쇠 트렌딩
+            stmt = text("""
+                SELECT id FROM upload.post
+                WHERE is_deleted = FALSE
+                ORDER BY (like_count * 0.7 + view_count * 0.3)
+                         / POWER(1.0 + EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0, 1.2) DESC
+                LIMIT :l OFFSET :s
+            """)
             res = await db.execute(stmt, {"l": limit, "s": skip})
             return [{"id": str(row[0]), "score": 0.0} for row in res.all()]
 
@@ -139,7 +147,7 @@ class UnifiedIntelligenceService:
                 )
                 # image 쿼리와 discovery 결과를 블렌딩: image 70% + user 30%
                 img_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
-                k_search = limit + len(exclude_history_ids or []) + skip + 20
+                k_search = (limit + len(exclude_history_ids or []) + skip) * 2 + 20
                 img_ids = vector_store.search_knn(img_norm, k=k_search)
                 exclude_set = set(str(i) for i in (exclude_history_ids or []))
                 img_ids_str = [str(i) for i in img_ids if str(i) not in exclude_set]
@@ -157,7 +165,7 @@ class UnifiedIntelligenceService:
                 return [{"id": pid, "score": s} for pid, s in page]
             else:
                 img_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
-                k_search = limit + len(exclude_history_ids or []) + skip
+                k_search = (limit + len(exclude_history_ids or []) + skip) * 2 + 20
                 result_ids = vector_store.search_knn(img_norm, k=k_search)
                 exclude_set = set(str(i) for i in (exclude_history_ids or []))
                 filtered = [str(i) for i in result_ids if str(i) not in exclude_set]
@@ -256,6 +264,14 @@ class UnifiedIntelligenceService:
         except Exception as e:
             logger.error(f"❌ Backfill failed: {e}")
 
+    async def remove_post(self, post_id: uuid.UUID):
+        """Redis에서 포스트 벡터 삭제."""
+        from app.ml.vector_store import vector_store
+        try:
+            vector_store.r.delete(f"post:{post_id}")
+        except Exception as e:
+            logger.warning(f"Failed to remove {post_id} from Redis: {e}")
+
     async def train_daily_async(self, db: AsyncSession):
         """
         비동기적으로 일일 학습 태스크를 실행합니다.
@@ -341,10 +357,19 @@ class UnifiedIntelligenceService:
                             qv = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device)
                         query_caps.append(qv)
 
+                    # Hard negatives: 전체 아이템 풀에서 랜덤 샘플링 (배치 외부 negatives)
+                    pool_keys = list(item_emb_lookup.keys())
+                    target_set = {target for _, target in batch}
+                    neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
+                    n_hard = min(64, len(neg_candidates))
+                    extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device) \
+                                 if n_hard > 0 else None
+
                     loss = self.trainer.train_user_query_step(
                         torch.stack(hist_embs),
                         torch.stack(target_vecs),
                         torch.stack(query_caps),
+                        extra_negs,
                     )
                     total_loss += loss
                 if (epoch + 1) % 10 == 0:

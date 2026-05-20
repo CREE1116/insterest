@@ -10,14 +10,13 @@ class PostVector(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     post_id = Column(UUID(as_uuid=True), nullable=False, unique=True)
     
-    # Pre-trained LLM Vectors
-    # Stored as binary for efficiency
-    caption_vector = Column(LargeBinary, nullable=False)   # 768-dim
-    hashtag_vector = Column(LargeBinary, nullable=True)    # 768-dim
-    image_vector = Column(LargeBinary, nullable=True)      # 512-dim (CLIP)
-    
-    # Metadata for filtering and debugging
-    content_text = Column(JSON, nullable=True) # { "caption": "...", "tags": "..." }
+    # CLIP 512-dim vectors (text & image in unified CLIP space)
+    caption_vector = Column(LargeBinary, nullable=False)   # 512-dim CLIP text (mood = caption+image_prompt+music_prompt)
+    hashtag_vector = Column(LargeBinary, nullable=True)    # 512-dim CLIP text (hashtags)
+    image_vector = Column(LargeBinary, nullable=True)      # 512-dim CLIP image
+
+    # Metadata: { "caption": "...", "image_prompt": "...", "music_prompt": "..." }
+    content_text = Column(JSON, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
