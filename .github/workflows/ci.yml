@@ -100,21 +100,30 @@ jobs:
 
       - name: Update Kubernetes manifests
         run: |
-          # Clean old manifests in the infra repo
-          rm -rf infra-repo/k8s/*
           mkdir -p infra-repo/k8s
-          
-          # Copy all manifests from main repo to infra repo
-          cp -r infra/k8s/* infra-repo/k8s/
-          
+
+          # Copy non-deployment manifests (Services, PVCs, Ingress, CronJobs, etc.)
+          # Deployment files are managed separately to preserve existing SHA image tags
+          find infra/k8s -type f -name "*.yaml" | while read f; do
+            rel="${f#infra/k8s/}"
+            dest="infra-repo/k8s/$rel"
+            mkdir -p "$(dirname "$dest")"
+            if [[ "$(basename "$f")" != deployment*.yaml ]]; then
+              cp "$f" "$dest"
+            elif [ ! -f "$dest" ]; then
+              # New deployment file not yet in infra-repo: copy as-is
+              cp "$f" "$dest"
+            fi
+          done
+
           cd infra-repo
-          
+
           # Get the list of changed services
           CHANGES='${{ steps.filter.outputs.changes }}'
           echo "Changes detected: $CHANGES"
-          
+
           SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend" "console-frontend")
-          
+
           for service in "${SERVICES[@]}"; do
             IS_CHANGED=$(echo "$CHANGES" | jq -r ".[] | select(. == \"$service\")")
             
