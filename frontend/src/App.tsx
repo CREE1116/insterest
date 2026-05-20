@@ -512,16 +512,16 @@ const AppContent: React.FC = () => {
                 columns.map((column, colIndex) => (
                   <div key={`col-${colIndex}`} className="masonry-column">
                     {column.map((post: any) => (
-                      <motion.div 
-                        key={post.id} 
-                        whileHover={{ scale: 1.02 }} 
-                        onClick={() => setSelectedPost(post)} 
-                        className="masonry-item" 
+                      <motion.div
+                        key={post.id}
+                        whileHover={{ scale: 1.02 }}
+                        onClick={() => setSelectedPost(post)}
+                        className="masonry-item"
                         style={{ borderRadius: '24px', overflow: 'hidden', position: 'relative', cursor: 'zoom-in', boxShadow: 'var(--shadow-sm)' }}
                       >
-                        <img 
-                          src={post.content?.media_list?.find((m:any)=>m.type==='image')?.url} 
-                          style={{ width: '100%', display: 'block' }} 
+                        <img
+                          src={post.content?.media_list?.find((m:any)=>m.type==='image')?.url}
+                          style={{ width: '100%', display: 'block' }}
                         />
                         <div style={{ position: 'absolute', bottom: '1rem', left: '1rem', display: 'flex', gap: '0.5rem' }}>
                           {(() => {
@@ -542,12 +542,20 @@ const AppContent: React.FC = () => {
                   </div>
                 ))
               )}
-              <div ref={observerTarget} style={{ height: '100px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'absolute', bottom: 0 }}>
-                {isFetchingNextPage && <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: 'linear' }} style={{ width: '2rem', height: '2rem', border: '3px solid #f1f5f9', borderTopColor: 'var(--primary-red)', borderRadius: '50%' }} />}
-              </div>
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Infinite scroll sentinel — lives outside AnimatePresence so it's always mounted */}
+        <div ref={observerTarget} style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {isFetchingNextPage && (
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
+              style={{ width: '2rem', height: '2rem', border: '3px solid #f1f5f9', borderTopColor: 'var(--primary-red)', borderRadius: '50%' }}
+            />
+          )}
+        </div>
       </main>
 
       <motion.button whileHover={{ scale: 1.1, rotate: 90 }} onClick={() => isLoggedIn ? setShowCreateModal(true) : setShowAuthModal(true)} style={{ position: 'fixed', bottom: '2.5rem', right: '2.5rem', width: '4rem', height: '4rem', backgroundColor: 'var(--primary-red)', color: 'white', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow-lg)', zIndex: 40 }}><Plus size={36} strokeWidth={3} /></motion.button>

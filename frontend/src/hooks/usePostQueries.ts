@@ -83,7 +83,7 @@ export const useFeed = (viewMode: string, userId?: string, options: any = {}) =>
     queryKey: ['feed', viewMode, userId, options.collectionId],
     queryFn: async ({ pageParam = 0 }) => {
       let fetchedPosts;
-      const limit = 50;
+      const limit = 20;
       const skip = typeof pageParam === 'number' ? pageParam : 0;
       
       if (viewMode === 'all') {

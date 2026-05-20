@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   BarChart2, Play, RefreshCw, Upload,
-  AlertCircle, Info, X, Wand2
+  AlertCircle, Info, X, Wand2, Download
 } from 'lucide-react';
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -390,6 +390,30 @@ const DevConsole: React.FC = () => {
     } finally {
       setDeleteLoading(false);
     }
+  };
+
+  const downloadBenchmarkCSV = () => {
+    if (!animalResult) return;
+    const headers = ['Class', 'Text_Rank', 'T@1', 'T@3', 'T@5', 'Img_Rank', 'I@1', 'I@3', 'I@5'];
+    const rows = animalResult.details.map(d => {
+      const tr = typeof d.text_rank === 'number' ? d.text_rank : 999;
+      const ir = typeof d.image_rank === 'number' ? d.image_rank : 999;
+      return [
+        d.name,
+        tr >= 999 ? 'NF' : tr,
+        tr <= 1 ? 1 : 0, tr <= 3 ? 1 : 0, tr <= 5 ? 1 : 0,
+        ir >= 999 ? 'NF' : ir,
+        ir <= 1 ? 1 : 0, ir <= 3 ? 1 : 0, ir <= 5 ? 1 : 0,
+      ].join(',');
+    });
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cifar100_benchmark_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const clearSimImage = () => {
@@ -861,11 +885,76 @@ const DevConsole: React.FC = () => {
                         ))}
                       </div>
 
+                      {/* Infographic charts */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem', marginBottom: '1.75rem' }}>
+                        {/* Chart 1: Recall comparison bar chart */}
+                        <div style={{ border: '1px solid #e2e8f0', borderRadius: '16px', padding: '1.25rem', backgroundColor: '#fafcff' }}>
+                          <h5 style={{ fontWeight: 800, fontSize: '0.875rem', color: '#0f172a', marginBottom: '1rem' }}>📊 Text vs Image Recall 비교</h5>
+                          <ResponsiveContainer width="100%" height={200}>
+                            <BarChart data={[
+                              { name: 'Recall@1', text: +((animalResult.text_to_image['Recall@1'] || 0) * 100).toFixed(1), image: +((animalResult.image_to_image['Recall@1'] || 0) * 100).toFixed(1) },
+                              { name: 'Recall@3', text: +((animalResult.text_to_image['Recall@3'] || 0) * 100).toFixed(1), image: +((animalResult.image_to_image['Recall@3'] || 0) * 100).toFixed(1) },
+                              { name: 'Recall@5', text: +((animalResult.text_to_image['Recall@5'] || 0) * 100).toFixed(1), image: +((animalResult.image_to_image['Recall@5'] || 0) * 100).toFixed(1) },
+                              { name: 'NDCG@3',   text: +((animalResult.text_to_image['NDCG@3']   || 0) * 100).toFixed(1), image: +((animalResult.image_to_image['NDCG@3']   || 0) * 100).toFixed(1) },
+                            ]} barCategoryGap="28%" barGap={3}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                              <XAxis dataKey="name" tick={{ fontSize: 11, fontWeight: 700, fill: '#475569' }} />
+                              <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                              <Tooltip formatter={(v: number) => `${v}%`} />
+                              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontWeight: 700 }} />
+                              <Bar dataKey="text" name="Text→Img" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                              <Bar dataKey="image" name="Img→Img" fill="#0284c7" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        {/* Chart 2: Rank distribution histogram */}
+                        <div style={{ border: '1px solid #e2e8f0', borderRadius: '16px', padding: '1.25rem', backgroundColor: '#fafcff' }}>
+                          <h5 style={{ fontWeight: 800, fontSize: '0.875rem', color: '#0f172a', marginBottom: '1rem' }}>📈 랭크 분포 (클래스 수)</h5>
+                          <ResponsiveContainer width="100%" height={200}>
+                            <BarChart data={(() => {
+                              const buckets = [
+                                { name: 'Top 1',   textCount: 0, imgCount: 0 },
+                                { name: '2–3',     textCount: 0, imgCount: 0 },
+                                { name: '4–5',     textCount: 0, imgCount: 0 },
+                                { name: '6–10',    textCount: 0, imgCount: 0 },
+                                { name: '11+',     textCount: 0, imgCount: 0 },
+                              ];
+                              animalResult.details.forEach(d => {
+                                const tr = typeof d.text_rank === 'number' ? d.text_rank : 999;
+                                const ir = typeof d.image_rank === 'number' ? d.image_rank : 999;
+                                const tBucket = tr === 1 ? 0 : tr <= 3 ? 1 : tr <= 5 ? 2 : tr <= 10 ? 3 : 4;
+                                const iBucket = ir === 1 ? 0 : ir <= 3 ? 1 : ir <= 5 ? 2 : ir <= 10 ? 3 : 4;
+                                buckets[tBucket].textCount++;
+                                buckets[iBucket].imgCount++;
+                              });
+                              return buckets;
+                            })()} barCategoryGap="28%" barGap={3}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                              <XAxis dataKey="name" tick={{ fontSize: 11, fontWeight: 700, fill: '#475569' }} />
+                              <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#94a3b8' }} label={{ value: '클래스 수', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#94a3b8' } }} />
+                              <Tooltip />
+                              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontWeight: 700 }} />
+                              <Bar dataKey="textCount" name="Text→Img" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                              <Bar dataKey="imgCount"  name="Img→Img"  fill="#0284c7" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
                       {/* Per-class detail table */}
                       <div>
-                        <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a', marginBottom: '0.75rem' }}>
-                          클래스별 검색 결과 ({animalResult.details.length}개 클래스)
-                        </h4>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                          <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a' }}>
+                            클래스별 검색 결과 ({animalResult.details.length}개 클래스)
+                          </h4>
+                          <button
+                            onClick={downloadBenchmarkCSV}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', borderRadius: '10px', border: '1px solid #e2e8f0', backgroundColor: 'white', fontWeight: 700, fontSize: '0.8125rem', cursor: 'pointer', color: '#475569' }}
+                          >
+                            <Download size={14} /> CSV 내보내기
+                          </button>
+                        </div>
                         <div style={{ borderRadius: '14px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
                           {/* Header */}
                           <div style={{ display: 'grid', gridTemplateColumns: '2.5rem 1fr 5.5rem 3.5rem 3.5rem 3.5rem 5.5rem 3.5rem 3.5rem 3.5rem', backgroundColor: '#f8fafc', borderBottom: '2px solid #e2e8f0', padding: '0.625rem 0.875rem', alignItems: 'center', gap: '0.25rem' }}>
@@ -940,7 +1029,7 @@ const DevConsole: React.FC = () => {
                             <span>✅ Img@3: {animalResult.details.filter(d => typeof d.image_rank === 'number' && d.image_rank <= 3).length}/{animalResult.details.length}</span>
                           </div>
                         </div>
-                      </div>
+                      </div>{/* end table wrapper */}
                     </>
                   )}
                 </div>
