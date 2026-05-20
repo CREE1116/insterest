@@ -350,6 +350,22 @@ class BenchmarkService:
         for class_name, imgs in per_class.items():
             if class_name not in class_post_ids:
                 class_post_ids[class_name] = {}
+
+            # 클래스당 해시태그 1회 upsert
+            try:
+                await db.execute(text(
+                    "INSERT INTO upload.hashtag (tag) VALUES (:tag) ON CONFLICT (tag) DO NOTHING"
+                ), {"tag": class_name})
+                await db.commit()
+                h_res = await db.execute(text(
+                    "SELECT id FROM upload.hashtag WHERE tag = :tag"
+                ), {"tag": class_name})
+                hashtag_id = h_res.scalar()
+            except Exception as e:
+                logger.warning(f"Hashtag upsert failed for {class_name}: {e}")
+                await db.rollback()
+                hashtag_id = None
+
             for idx, pil_img in enumerate(imgs):
                 img_bytes = self._cifar_img_to_bytes(pil_img)
 
@@ -386,6 +402,12 @@ class BenchmarkService:
                         "VALUES (:id, :uid, :cid, 'IMAGE', :url, NOW(), '{}'::jsonb)"
                     ), {"id": media_id, "uid": system_user_id, "cid": content_id,
                         "url": f"/benchmark/cifar100/{class_name}_{idx}.jpg"})
+                    # 해시태그 연결
+                    if hashtag_id is not None:
+                        await db.execute(text(
+                            "INSERT INTO upload.post_hashtag (post_id, hashtag_id) "
+                            "VALUES (:pid, :hid) ON CONFLICT DO NOTHING"
+                        ), {"pid": post_id, "hid": hashtag_id})
                     await db.commit()
                 except Exception as e:
                     logger.error(f"DB insert failed for {class_name}[{idx}]: {e}")

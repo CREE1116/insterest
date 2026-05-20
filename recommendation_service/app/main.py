@@ -85,8 +85,12 @@ async def startup_event():
         redis_count = vector_store.count()
         if redis_count < db_count:
             logger.info(f"🔄 Redis ({redis_count}) < DB ({db_count}) — backfilling...")
-            async with AsyncSessionLocal() as db:
-                asyncio.create_task(intel_service.backfill_all_posts(db))
+            # 세션을 태스크 안에서 생성 — create_task는 async with 블록 종료 후 실행되므로
+            # 외부 세션을 넘기면 이미 닫힌 세션을 사용해 에러 발생
+            async def _backfill_task():
+                async with AsyncSessionLocal() as session:
+                    await intel_service.backfill_all_posts(session)
+            asyncio.create_task(_backfill_task())
         else:
             logger.info(f"✅ Redis index up to date ({redis_count} vectors).")
     except Exception as e:
