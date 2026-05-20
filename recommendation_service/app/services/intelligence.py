@@ -529,13 +529,18 @@ class UnifiedIntelligenceService:
     def _run_training_loop(self, raw_clip, train_data, build_lookup_fn, BATCH=32) -> list:
         """순수 CPU/GPU 연산만 수행 — asyncio.to_thread에서 호출. epoch loss 이력 반환."""
         item_emb_lookup = build_lookup_fn()
-        EPOCHS = 20
+        EPOCHS = 100
+        PATIENCE = 5
+        MIN_DELTA = 0.001
         self.model.train()
         loss_history = []
 
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.trainer.optimizer, T_max=EPOCHS, eta_min=1e-6
         )
+
+        best_loss = float("inf")
+        patience_counter = 0
 
         for epoch in range(EPOCHS):
             random.shuffle(train_data)
@@ -578,6 +583,16 @@ class UnifiedIntelligenceService:
             avg_loss = total_loss / max(n_batches, 1)
             loss_history.append({"epoch": epoch + 1, "loss": round(avg_loss, 4)})
             logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} lr={scheduler.get_last_lr()[0]:.2e}")
+
+            if avg_loss < best_loss - MIN_DELTA:
+                best_loss = avg_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= PATIENCE:
+                    logger.info(f"⏹ Early stopping at epoch {epoch+1} (no improvement for {PATIENCE} epochs)")
+                    break
+
         return loss_history
 
     async def evaluate_offline(self, db: AsyncSession):
