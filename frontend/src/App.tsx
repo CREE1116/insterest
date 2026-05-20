@@ -318,7 +318,7 @@ const AppContent: React.FC = () => {
                 disabled={!!searchImage}
                 value={searchImage ? "이미지 기준으로 추천 검색된 결과입니다." : searchQuery}
                 onChange={e => { setSearchQuery(e.target.value); setActiveHashtag(''); setShowSuggestions(true); }}
-                onFocus={() => setShowSuggestions(true)}
+                onFocus={() => { if (searchQuery.trim()) setShowSuggestions(true); }}
                 onKeyDown={e => { if (e.key === 'Enter') handleSearchSubmit(); if (e.key === 'Escape') setShowSuggestions(false); }}
                 style={{
                   width: '100%',
