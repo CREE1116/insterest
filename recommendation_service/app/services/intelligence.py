@@ -602,7 +602,7 @@ class UnifiedIntelligenceService:
                 all_vectors = res2.scalars().all()
                 p_vectors = {v.post_id: v for v in all_vectors}
 
-                if all_vectors and len(user_sequences) >= 2:
+                if all_vectors and len(user_sequences) >= 1:
                     raw_clip: Dict[Any, tuple] = {}
                     with torch.no_grad():
                         for v in all_vectors:
@@ -637,14 +637,17 @@ class UnifiedIntelligenceService:
                             if target in p_vectors and all(h in p_vectors for h in hist):
                                 train_data.append((hist, target))
 
-                    loss_history = await asyncio.to_thread(
-                        self._run_training_loop, raw_clip, train_data, _eval_build_lookup, BATCH
-                    )
-                    self._last_loss_history = loss_history
-                    self.trainer.save_model(settings.MODEL_SAVE_PATH)
-                    logger.info(f"✅ [Eval] Phase 1 done. {len(loss_history)} loss points recorded.")
+                    if len(train_data) >= 2:
+                        loss_history = await asyncio.to_thread(
+                            self._run_training_loop, raw_clip, train_data, _eval_build_lookup, BATCH
+                        )
+                        self._last_loss_history = loss_history
+                        self.trainer.save_model(settings.MODEL_SAVE_PATH)
+                        logger.info(f"✅ [Eval] Phase 1 done. {len(loss_history)} loss points recorded.")
+                    else:
+                        logger.info("ℹ️ [Eval] Skipped training (insufficient training pairs).")
                 else:
-                    logger.info("ℹ️ [Eval] Skipped training (insufficient data).")
+                    logger.info("ℹ️ [Eval] Skipped training (no interaction data).")
             except Exception as e:
                 logger.warning(f"⚠️ [Eval] Training phase failed, using current model: {e}")
 

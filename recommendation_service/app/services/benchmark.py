@@ -492,6 +492,15 @@ class BenchmarkService:
             return {"status": "error", "message": f"Insufficient samples injected ({len(all_post_ids)})."}
 
         from app.services.intelligence import intel_service
+
+        # Train UserTower on injected benchmark data before measuring
+        try:
+            logger.info("🏋️ Training UserTower on injected benchmark data...")
+            await intel_service.train_discovery(db)
+            logger.info("✅ Training complete.")
+        except Exception as e:
+            logger.warning(f"⚠️ Training failed, continuing with current model: {e}")
+
         total_samples = len(all_post_ids)
         search_limit = min(total_samples, 200)
 
