@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db, AsyncSessionLocal
 from app.services.intelligence import intel_service
 from typing import List, Optional
+
 import uuid
 
 router = APIRouter()

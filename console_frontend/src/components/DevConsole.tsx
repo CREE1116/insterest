@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
+import {
   BarChart2, Play, RefreshCw, Upload,
   CheckCircle2, AlertCircle, Info, X, Wand2
 } from 'lucide-react';
+import {
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, Cell, PieChart, Pie
+} from 'recharts';
 import client from '../api/client';
 
 interface MetricDetail {
@@ -453,6 +458,51 @@ const DevConsole: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Charts */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+                  {/* Radar Chart */}
+                  <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
+                    <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '1.25rem', color: '#0f172a' }}>📡 다차원 메트릭 레이더</h3>
+                    <ResponsiveContainer width="100%" height={260}>
+                      <RadarChart data={[
+                        { subject: 'Recall@5', rec: +(metrics.metrics.recommendation_quality['Recall@5'] * 100).toFixed(1), search: +(metrics.metrics.search_fidelity['Recall@5'] * 100).toFixed(1) },
+                        { subject: 'NDCG@5',   rec: +(metrics.metrics.recommendation_quality['NDCG@5']   * 100).toFixed(1), search: +(metrics.metrics.search_fidelity['NDCG@5']   * 100).toFixed(1) },
+                        { subject: 'Recall@10',rec: +(metrics.metrics.recommendation_quality['Recall@10']* 100).toFixed(1), search: +(metrics.metrics.search_fidelity['Recall@10']* 100).toFixed(1) },
+                        { subject: 'NDCG@10',  rec: +(metrics.metrics.recommendation_quality['NDCG@10']  * 100).toFixed(1), search: +(metrics.metrics.search_fidelity['NDCG@10']  * 100).toFixed(1) },
+                      ]}>
+                        <PolarGrid stroke="#e2e8f0" />
+                        <PolarAngleAxis dataKey="subject" tick={{ fontSize: 12, fontWeight: 700, fill: '#475569' }} />
+                        <PolarRadiusAxis angle={90} domain={[0, 100]} tick={{ fontSize: 10, fill: '#94a3b8' }} tickCount={4} />
+                        <Radar name="추천 품질" dataKey="rec" stroke="#e60023" fill="#e60023" fillOpacity={0.18} strokeWidth={2} />
+                        <Radar name="검색 정밀도" dataKey="search" stroke="#0284c7" fill="#0284c7" fillOpacity={0.18} strokeWidth={2} />
+                        <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, fontWeight: 700 }} />
+                        <Tooltip formatter={(v: number) => `${v}%`} />
+                      </RadarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Bar Chart */}
+                  <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
+                    <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '1.25rem', color: '#0f172a' }}>📊 메트릭 비교 히스토그램</h3>
+                    <ResponsiveContainer width="100%" height={260}>
+                      <BarChart data={[
+                        { name: 'Recall@5',  rec: +(metrics.metrics.recommendation_quality['Recall@5'] * 100).toFixed(1), search: +(metrics.metrics.search_fidelity['Recall@5'] * 100).toFixed(1) },
+                        { name: 'NDCG@5',    rec: +(metrics.metrics.recommendation_quality['NDCG@5']   * 100).toFixed(1), search: +(metrics.metrics.search_fidelity['NDCG@5']   * 100).toFixed(1) },
+                        { name: 'Recall@10', rec: +(metrics.metrics.recommendation_quality['Recall@10']* 100).toFixed(1), search: +(metrics.metrics.search_fidelity['Recall@10']* 100).toFixed(1) },
+                        { name: 'NDCG@10',   rec: +(metrics.metrics.recommendation_quality['NDCG@10']  * 100).toFixed(1), search: +(metrics.metrics.search_fidelity['NDCG@10']  * 100).toFixed(1) },
+                      ]} barCategoryGap="30%" barGap={4}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                        <XAxis dataKey="name" tick={{ fontSize: 11, fontWeight: 700, fill: '#475569' }} />
+                        <YAxis domain={[0, 100]} unit="%" tick={{ fontSize: 11, fill: '#94a3b8' }} />
+                        <Tooltip formatter={(v: number) => `${v}%`} />
+                        <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, fontWeight: 700 }} />
+                        <Bar dataKey="rec" name="추천 품질" fill="#e60023" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="search" name="검색 정밀도" fill="#0284c7" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
                   <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
                     <h3 style={{ fontSize: '1.125rem', fontWeight: 800, marginBottom: '1.5rem', color: '#0f172a' }}>❤️ 개인화 추천 만족도 (Recommendation Quality)</h3>
@@ -534,6 +584,21 @@ const DevConsole: React.FC = () => {
                     ))}
                   </select>
                 </div>
+
+                {activeUsers.length > 0 && (
+                  <div style={{ marginBottom: '1.5rem' }}>
+                    <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, color: '#64748b', marginBottom: '0.5rem' }}>유저 좋아요 분포</label>
+                    <ResponsiveContainer width="100%" height={130}>
+                      <BarChart data={activeUsers.slice(0, 8).map(u => ({ name: u.label.split(' ')[0], likes: u.likes_count }))} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                        <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#94a3b8' }} />
+                        <YAxis tick={{ fontSize: 9, fill: '#94a3b8' }} />
+                        <Tooltip formatter={(v: number) => [`${v}개`, '좋아요']} />
+                        <Bar dataKey="likes" fill="#e60023" radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
 
                 <div style={{ marginBottom: '1.5rem' }}>
                   <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 700, color: '#64748b', marginBottom: '0.5rem' }}>검색 / 추천 모드</label>
