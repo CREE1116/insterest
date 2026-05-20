@@ -219,6 +219,39 @@ export const useImageSearch = (imageFile: File | null, userId?: string) => {
   });
 };
 
+export const useHashtags = (q: string) => {
+  return useQuery({
+    queryKey: ['hashtags', q],
+    queryFn: async () => {
+      const res = await client.get('/upload/content/hashtags', { params: { q, limit: 30 } });
+      return Array.isArray(res.data) ? res.data as { tag: string; count: number }[] : [];
+    },
+    staleTime: 1000 * 60 * 5,
+  });
+};
+
+export const useHashtagSearch = (tag: string) => {
+  return useQuery({
+    queryKey: ['hashtagSearch', tag],
+    queryFn: async () => {
+      if (!tag) return [];
+      const res = await client.get(`/upload/content/by-hashtag/${encodeURIComponent(tag)}`);
+      const results = Array.isArray(res.data) ? res.data : [];
+      const userIds = [...new Set(results.map((p: any) => p.user_id))].filter(Boolean);
+      if (userIds.length > 0) {
+        const params = new URLSearchParams();
+        userIds.forEach((id: any) => params.append('user_ids', String(id)));
+        const usersRes = await client.get(`/users/batch?${params.toString()}`);
+        const userMap: Record<string, any> = {};
+        usersRes.data.forEach((u: any) => { userMap[u.user_id] = u; });
+        return results.map((p: any) => ({ ...p, author: userMap[p.user_id] || { nickname: '유저' } }));
+      }
+      return results;
+    },
+    enabled: tag.length > 0,
+  });
+};
+
 export const useSavedIds = (isLoggedIn: boolean) => {
   return useQuery({
     queryKey: ['savedIds'],

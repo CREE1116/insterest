@@ -289,6 +289,79 @@ async def get_all_posts(
 class PostBatchRequest(BaseModel):
     post_ids: List[uuid.UUID]
 
+@router.get("/hashtags")
+async def get_hashtags(
+    q: Optional[str] = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db)
+):
+    """전체 해시태그 목록을 반환합니다. q 파라미터로 prefix 필터링 가능."""
+    from sqlalchemy import func
+    stmt = (
+        select(Hashtag.tag, func.count(Hashtag.id).label("count"))
+        .join(Hashtag.posts)
+        .where(Post.is_deleted == False)
+        .group_by(Hashtag.tag)
+        .order_by(desc("count"))
+        .limit(limit)
+    )
+    if q:
+        stmt = stmt.where(Hashtag.tag.ilike(f"{q}%"))
+    result = await db.execute(stmt)
+    return [{"tag": row.tag, "count": row.count} for row in result.all()]
+
+
+@router.get("/by-hashtag/{tag}", response_model=List[PostRead])
+async def get_posts_by_hashtag(
+    tag: str,
+    skip: int = 0,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user_id: Optional[uuid.UUID] = Depends(get_current_user_id_optional)
+):
+    """특정 해시태그가 달린 포스트를 정확히 검색합니다."""
+    result = await db.execute(
+        select(Post)
+        .options(
+            selectinload(Post.hashtags),
+            selectinload(Post.content).selectinload(Content.media_list),
+            selectinload(Post.content).selectinload(Content.generation_meta)
+        )
+        .join(Post.hashtags)
+        .where(Hashtag.tag == tag.lstrip("#"), Post.is_deleted == False)
+        .order_by(desc(Post.created_at))
+        .offset(skip)
+        .limit(limit)
+    )
+    posts = result.scalars().all()
+    if not posts:
+        return []
+
+    post_ids = [p.id for p in posts]
+    liked_post_ids: set = set()
+    like_counts: dict = {}
+    if current_user_id:
+        liked_res = await db.execute(
+            text("SELECT post_id FROM interaction.likes WHERE user_id = :uid AND post_id = ANY(:pids)")
+            .bindparams(uid=current_user_id, pids=post_ids)
+        )
+        liked_post_ids = {row[0] for row in liked_res.all()}
+    count_res = await db.execute(
+        text("SELECT post_id, COUNT(*) FROM interaction.likes WHERE post_id = ANY(:pids) GROUP BY post_id")
+        .bindparams(pids=post_ids)
+    )
+    like_counts = {row[0]: row[1] for row in count_res.all()}
+
+    response_data = []
+    for p in posts:
+        p_read = PostRead.model_validate(p)
+        p_read.content = enrich_content_read(p.content)
+        p_read.is_liked = p.id in liked_post_ids
+        p_read.like_count = like_counts.get(p.id, 0)
+        response_data.append(p_read)
+    return response_data
+
+
 @router.post("/batch", response_model=List[PostRead])
 async def get_posts_batch(
     request: PostBatchRequest,

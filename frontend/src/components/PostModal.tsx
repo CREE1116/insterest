@@ -240,8 +240,8 @@ const PostModal: React.FC<PostModalProps> = ({ post, isSavedInitial = false, onC
                 </div>
               ) : (
                 <>
-                  <p style={{ fontSize: '1rem', fontWeight: 600, lineHeight: 1.75, fontFamily: "'Noto Serif KR', Georgia, serif", color: '#1a1a1a', letterSpacing: '-0.01em' }}>{post.caption}</p>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.875rem' }}>{post.hashtags?.map((h: any) => <span key={h.tag} style={{ color: '#6366f1', fontSize: '0.8125rem', fontWeight: 700, fontFamily: "'Noto Serif KR', sans-serif" }}>#{h.tag}</span>)}</div>
+                  <p style={{ fontSize: '1rem', fontWeight: 600, lineHeight: 1.75, fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", color: '#1a1a1a', letterSpacing: '-0.02em' }}>{post.caption}</p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.875rem' }}>{post.hashtags?.map((h: any) => <span key={h.tag} style={{ color: '#6366f1', fontSize: '0.8125rem', fontWeight: 700, fontFamily: "'Inter', sans-serif" }}>#{h.tag}</span>)}</div>
                 </>
               )}
             </div>

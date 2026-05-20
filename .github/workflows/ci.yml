@@ -130,7 +130,7 @@ jobs:
             
             if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ -n "$IS_CHANGED" ]]; then
               echo "Updating tag for $service..."
-              find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: .*/?$service:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
+              find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:[a-zA-Z0-9._-]+|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
             fi
           done
           

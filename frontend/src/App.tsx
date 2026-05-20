@@ -9,7 +9,7 @@ import CreateModal from './components/CreateModal';
 import SettingsModal from './components/SettingsModal';
 import ImageSearchModal from './components/ImageSearchModal';
 import client from './api/client';
-import { useFeed, useSearch, useSavedIds, useCollections, useImageSearch } from './hooks/usePostQueries';
+import { useFeed, useSearch, useSavedIds, useCollections, useImageSearch, useHashtags, useHashtagSearch } from './hooks/usePostQueries';
 
 const SkeletonCard: React.FC = () => (
   <div className="masonry-item" style={{ breakInside: 'avoid', marginBottom: '1.5rem', borderRadius: '24px', overflow: 'hidden', backgroundColor: '#f1f5f9', height: `${Math.random() * 200 + 200}px`, position: 'relative' }}>
@@ -32,13 +32,50 @@ const AppContent: React.FC = () => {
   const [selectedCollection, setSelectedCollection] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchImage, setSearchImage] = useState<File | null>(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeHashtag, setActiveHashtag] = useState(''); // 선택된 해시태그 검색
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('searchHistory') || '[]'); } catch { return []; }
+  });
+  const searchRef = React.useRef<HTMLDivElement>(null);
+
+  const isHashtagMode = searchQuery.startsWith('#');
+  const hashtagFilterQ = isHashtagMode ? searchQuery.slice(1) : searchQuery;
 
   useEffect(() => {
     if (viewMode !== 'explore') {
-      setSearchQuery('');
-      setSearchImage(null);
+      setSearchQuery(''); setSearchImage(null); setShowSuggestions(false); setActiveHashtag('');
     }
   }, [viewMode]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) setShowSuggestions(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const saveToHistory = (q: string) => {
+    if (!q.trim()) return;
+    const next = [q, ...searchHistory.filter(h => h !== q)].slice(0, 8);
+    setSearchHistory(next);
+    localStorage.setItem('searchHistory', JSON.stringify(next));
+  };
+
+  const handleSelectSuggestion = (value: string, isTag = false) => {
+    const query = isTag ? `#${value}` : value;
+    setSearchQuery(query);
+    setShowSuggestions(false);
+    if (isTag) { setActiveHashtag(value); } else { setActiveHashtag(''); saveToHistory(value); }
+  };
+
+  const handleSearchSubmit = () => {
+    if (!searchQuery.trim()) return;
+    if (isHashtagMode) { setActiveHashtag(hashtagFilterQ); }
+    else { saveToHistory(searchQuery); }
+    setShowSuggestions(false);
+  };
 
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -90,7 +127,9 @@ const AppContent: React.FC = () => {
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const feedPosts = infiniteFeedData?.pages.flatMap(page => page.posts) || [];
-  const { data: searchResults, isFetching: searchLoading } = useSearch(searchQuery);
+  const { data: searchResults, isFetching: searchLoading } = useSearch(isHashtagMode || searchImage ? '' : searchQuery);
+  const { data: hashtagSearchResults, isFetching: hashtagSearchLoading } = useHashtagSearch(activeHashtag);
+  const { data: hashtagSuggestions = [] } = useHashtags(hashtagFilterQ);
   const { data: imageSearchResults, isFetching: imageSearchLoading } = useImageSearch(searchImage, user?.id || user?.user_id);
   const { data: savedPostIds = [] } = useSavedIds(isLoggedIn);
   const { data: collections = [] } = useCollections(isLoggedIn && (viewMode === 'saved' || (viewMode === 'profile' && profileTab === 'folders')));
@@ -148,11 +187,15 @@ const AppContent: React.FC = () => {
     }
   }, [viewMode, isLoggedIn]);
 
-  const displayPosts = (viewMode === 'explore') 
-    ? (searchImage ? (imageSearchResults || []) : (searchQuery.trim() ? (searchResults || []) : feedPosts)) 
+  const displayPosts = (viewMode === 'explore')
+    ? (searchImage
+        ? (imageSearchResults || [])
+        : activeHashtag
+          ? (hashtagSearchResults || [])
+          : (searchQuery.trim() ? (searchResults || []) : feedPosts))
     : feedPosts;
   const isLoading = (viewMode === 'explore')
-    ? (searchImage ? imageSearchLoading : (searchQuery.trim() ? searchLoading : (feedLoading && feedPosts.length === 0)))
+    ? (searchImage ? imageSearchLoading : activeHashtag ? hashtagSearchLoading : (searchQuery.trim() ? searchLoading : (feedLoading && feedPosts.length === 0)))
     : (feedLoading && feedPosts.length === 0);
 
   // Masonry Column Distribution Logic
@@ -256,45 +299,101 @@ const AppContent: React.FC = () => {
       <main style={{ maxWidth: '1920px', margin: '0 auto' }}>
         {viewMode === 'explore' && (
           <div style={{ padding: '2rem 1rem', display: 'flex', justifyContent: 'center' }}>
-            <div style={{ position: 'relative', width: '100%', maxWidth: '600px' }}>
+            <div ref={searchRef} style={{ position: 'relative', width: '100%', maxWidth: '600px' }}>
+              {/* 검색창 */}
               {searchImage ? (
                 <div style={{ position: 'absolute', left: '1.5rem', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'white', padding: '0.35rem 0.75rem', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 2px 6px rgba(0,0,0,0.05)', zIndex: 10 }}>
                   <img src={URL.createObjectURL(searchImage)} style={{ width: '20px', height: '20px', borderRadius: '6px', objectFit: 'cover' }} />
                   <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)' }}>이미지 검색</span>
-                  <button 
-                    onClick={() => setSearchImage(null)} 
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0, color: 'var(--text-muted)' }}
-                  >
+                  <button onClick={() => setSearchImage(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0, color: 'var(--text-muted)' }}>
                     <Plus size={14} style={{ transform: 'rotate(45deg)' }} />
                   </button>
                 </div>
               ) : (
-                <Search size={20} style={{ position: 'absolute', left: '1.5rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <Search size={20} style={{ position: 'absolute', left: '1.5rem', top: '50%', transform: 'translateY(-50%)', color: isHashtagMode ? '#3b82f6' : 'var(--text-muted)', zIndex: 1 }} />
               )}
-              <input 
-                autoFocus 
-                placeholder={searchImage ? "" : "검색어를 입력해보세요"} 
+              <input
+                autoFocus
+                placeholder={searchImage ? "" : "#해시태그 또는 검색어를 입력하세요"}
                 disabled={!!searchImage}
-                value={searchImage ? "이미지 기준으로 추천 검색된 결과입니다." : searchQuery} 
-                onChange={e => setSearchQuery(e.target.value)} 
-                style={{ 
-                  width: '100%', 
-                  padding: `1rem 3.5rem 1rem ${searchImage ? '16.5rem' : '3.75rem'}`, 
-                  borderRadius: '24px', 
-                  backgroundColor: '#f1f5f9', 
-                  border: 'none', 
-                  fontSize: '1.1rem', 
-                  fontWeight: 600, 
+                value={searchImage ? "이미지 기준으로 추천 검색된 결과입니다." : searchQuery}
+                onChange={e => { setSearchQuery(e.target.value); setActiveHashtag(''); setShowSuggestions(true); }}
+                onFocus={() => setShowSuggestions(true)}
+                onKeyDown={e => { if (e.key === 'Enter') handleSearchSubmit(); if (e.key === 'Escape') setShowSuggestions(false); }}
+                style={{
+                  width: '100%',
+                  padding: `1rem 3.5rem 1rem ${searchImage ? '12rem' : '3.75rem'}`,
+                  borderRadius: showSuggestions && !searchImage ? '20px 20px 0 0' : '24px',
+                  backgroundColor: '#f1f5f9',
+                  border: 'none',
+                  fontSize: '1.1rem',
+                  fontWeight: 600,
                   boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
-                  color: searchImage ? 'var(--text-muted)' : 'inherit'
-                }} 
+                  color: isHashtagMode ? '#3b82f6' : (searchImage ? 'var(--text-muted)' : 'inherit'),
+                  outline: 'none',
+                  transition: 'border-radius 0.15s'
+                }}
               />
-              <button 
-                onClick={() => setShowImageSearchModal(true)}
-                style={{ position: 'absolute', right: '1.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
-              >
+              <button onClick={() => setShowImageSearchModal(true)} style={{ position: 'absolute', right: '1.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}>
                 <Camera size={20} />
               </button>
+
+              {/* 자동완성 드롭다운 */}
+              <AnimatePresence>
+                {showSuggestions && !searchImage && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.12 }}
+                    style={{ position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'white', borderRadius: '0 0 20px 20px', boxShadow: '0 8px 24px rgba(0,0,0,0.1)', border: '1px solid #f1f5f9', borderTop: 'none', zIndex: 100, overflow: 'hidden', maxHeight: '320px', overflowY: 'auto' }}
+                  >
+                    {/* 해시태그 섹션 */}
+                    {hashtagSuggestions.length > 0 && (
+                      <div>
+                        <div style={{ padding: '0.625rem 1.25rem 0.375rem', fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                          {isHashtagMode ? '해시태그' : '관련 해시태그'}
+                        </div>
+                        {hashtagSuggestions.slice(0, isHashtagMode ? 8 : 4).map(({ tag, count }) => (
+                          <button
+                            key={tag}
+                            onMouseDown={() => handleSelectSuggestion(tag, true)}
+                            style={{ width: '100%', textAlign: 'left', padding: '0.625rem 1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'none', border: 'none', cursor: 'pointer', transition: 'background 0.1s' }}
+                            onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f8fafc')}
+                            onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+                          >
+                            <span style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#3b82f6' }}>#{tag}</span>
+                            <span style={{ fontSize: '0.8125rem', color: '#94a3b8', fontWeight: 600 }}>{count}개 게시물</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 최근 검색 기록 */}
+                    {!isHashtagMode && searchHistory.filter(h => !searchQuery || h.toLowerCase().includes(searchQuery.toLowerCase())).length > 0 && (
+                      <div>
+                        <div style={{ padding: '0.625rem 1.25rem 0.375rem', fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>최근 검색</div>
+                        {searchHistory.filter(h => !searchQuery || h.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 4).map(h => (
+                          <button
+                            key={h}
+                            onMouseDown={() => handleSelectSuggestion(h)}
+                            style={{ width: '100%', textAlign: 'left', padding: '0.625rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.75rem', background: 'none', border: 'none', cursor: 'pointer' }}
+                            onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f8fafc')}
+                            onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+                          >
+                            <Search size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
+                            <span style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#334155' }}>{h}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {hashtagSuggestions.length === 0 && searchHistory.length === 0 && (
+                      <div style={{ padding: '1.25rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem', fontWeight: 600 }}>
+                        # 을 입력하면 해시태그 검색
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         )}
