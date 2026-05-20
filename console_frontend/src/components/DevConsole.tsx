@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  BarChart2, Play, RefreshCw, Upload, 
-  CheckCircle2, AlertCircle, Info, X
+  BarChart2, Play, RefreshCw, Upload,
+  CheckCircle2, AlertCircle, Info, X, Wand2
 } from 'lucide-react';
 import client from '../api/client';
 
