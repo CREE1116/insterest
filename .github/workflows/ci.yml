@@ -22,8 +22,9 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        service: 
+        service:
           - { name: 'auth-service', path: 'auth_service' }
           - { name: 'upload-service', path: 'upload_service' }
           - { name: 'generation-service', path: 'generation_service' }
