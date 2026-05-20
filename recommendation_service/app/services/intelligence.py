@@ -31,6 +31,10 @@ class UnifiedIntelligenceService:
         # Load weights if exist
         self.trainer.load_model(settings.MODEL_SAVE_PATH)
 
+        # Item-item Jaccard CF cache (item_id → frozenset of user_ids)
+        self._cf_item_users: Optional[Dict[str, frozenset]] = None
+        self._cf_cache_ts: float = 0.0
+
     async def discover(self, db: AsyncSession, query_text: str = None, user_id: uuid.UUID = None,
                        limit: int = 20, skip: int = 0, use_personalization: bool = True,
                        exclude_history_ids: List[uuid.UUID] = None,
@@ -97,6 +101,12 @@ class UnifiedIntelligenceService:
             if user_vec is not None:
                 user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector")
                 rank_lists.append([str(pid) for pid in user_ids])
+
+            # 3. Item-item Jaccard CF
+            if history_ids:
+                cf_ids = await self._get_cf_candidates(db, history_ids, k=k_search)
+                if cf_ids:
+                    rank_lists.append(cf_ids)
 
             # RRF 병합
             exclude_set = set(str(i) for i in (exclude_history_ids or []))
@@ -271,6 +281,37 @@ class UnifiedIntelligenceService:
             """)
             res = await db.execute(stmt, {"l": limit, "s": skip})
             return [{"id": str(row[0]), "score": 0.0} for row in res.all()]
+
+    async def _get_cf_candidates(self, db: AsyncSession, history_ids: List[uuid.UUID], k: int = 200) -> List[str]:
+        """Item-item Jaccard CF from co-like patterns. 5-min in-process cache."""
+        now = time.time()
+        if self._cf_item_users is None or now - self._cf_cache_ts > 300:
+            res = await db.execute(text("SELECT post_id, user_id FROM interaction.likes"))
+            item_users: Dict[str, set] = {}
+            for post_id, user_id in res.all():
+                pid = str(post_id)
+                item_users.setdefault(pid, set()).add(str(user_id))
+            self._cf_item_users = {pid: frozenset(uids) for pid, uids in item_users.items()}
+            self._cf_cache_ts = now
+
+        history_set = {str(h) for h in history_ids}
+        scores: Dict[str, float] = {}
+        for cand_id, cand_users in self._cf_item_users.items():
+            if cand_id in history_set or not cand_users:
+                continue
+            score = 0.0
+            for hist_id in history_set:
+                hist_users = self._cf_item_users.get(hist_id, frozenset())
+                if not hist_users:
+                    continue
+                intersection = len(hist_users & cand_users)
+                if intersection == 0:
+                    continue
+                score += intersection / len(hist_users | cand_users)
+            if score > 0:
+                scores[cand_id] = score
+
+        return [pid for pid, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]]
 
     async def index_post(self, db: AsyncSession, post_id: uuid.UUID,
                          caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray,
