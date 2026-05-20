@@ -3,11 +3,10 @@ kind: Service
 metadata:
   name: console-frontend
 spec:
-  type: NodePort
+  type: ClusterIP
   ports:
     - port: 80
       targetPort: 80
-      nodePort: 30088
   selector:
     app: console-frontend
 ---

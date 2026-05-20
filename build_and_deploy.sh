@@ -110,6 +110,7 @@ kubectl apply -f infra/k8s/recommendation/deployment.yaml
 kubectl apply -f infra/k8s/recommendation/cronjob.yaml
 kubectl apply -f infra/k8s/frontend/deployment.yaml
 kubectl apply -f infra/k8s/console/deployment.yaml
+kubectl apply -f infra/k8s/console/ingress.yaml
 
 # 6. Patch and Restart
 echo "🛠 Patching and Refreshing deployments to $TAG..."
@@ -136,7 +137,6 @@ kubectl wait --for=condition=available --timeout=300s deployment/recommendation-
 echo "🔌 Setting up Port Forwarding..."
 pkill -f "port-forward" || true
 kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 80:80 > /dev/null 2>&1 &
-kubectl port-forward service/console-frontend 30088:80 --address 0.0.0.0 > /dev/null 2>&1 &
 
 for i in {1..10}; do
     if nc -z localhost 80; then
