@@ -286,7 +286,12 @@ class UnifiedIntelligenceService:
         """Item-item Jaccard CF from co-like patterns. 5-min in-process cache."""
         now = time.time()
         if self._cf_item_users is None or now - self._cf_cache_ts > 300:
-            res = await db.execute(text("SELECT post_id, user_id FROM interaction.likes"))
+            # JOIN auth.users to exclude synthetic benchmark personas (not in auth.users)
+            res = await db.execute(text("""
+                SELECT il.post_id, il.user_id
+                FROM interaction.likes il
+                JOIN auth.users au ON au.id = il.user_id
+            """))
             item_users: Dict[str, set] = {}
             for post_id, user_id in res.all():
                 pid = str(post_id)
