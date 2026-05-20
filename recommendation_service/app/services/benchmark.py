@@ -120,15 +120,10 @@ class BenchmarkService:
 
         img_embs = np.array(img_embs) # [10, 512]
 
-        # CLIP 텍스트 임베딩 계산
-        clip_txt_embs = []
-        for text in captions:
-            inputs = nlp_embedder.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
-            with torch.no_grad():
-                text_features = nlp_embedder.clip_model.get_text_features(**inputs)
-            clip_txt_embs.append(F.normalize(text_features, p=2, dim=-1).squeeze(0).cpu().numpy())
-
-        clip_txt_embs = np.array(clip_txt_embs) # [10, 512]
+        # CLIP 텍스트 임베딩 계산 (SentenceTransformer API)
+        with torch.no_grad():
+            clip_txt_tensor = nlp_embedder.clip_model.encode(captions, convert_to_tensor=True).to(self.device)
+        clip_txt_embs = F.normalize(clip_txt_tensor, p=2, dim=-1).cpu().numpy()  # [10, 512]
 
         # Text-to-Image 유사도
         t2i_sim = np.dot(clip_txt_embs, img_embs.T)
@@ -239,10 +234,9 @@ class BenchmarkService:
                 img_emb = nlp_embedder.embed_image(img_bytes).to(self.device)
                 img_embs.append(F.normalize(img_emb, p=2, dim=-1).cpu().numpy())
                 
-                inputs = nlp_embedder.processor(text=[caption], return_tensors="pt", padding=True).to(self.device)
                 with torch.no_grad():
-                    text_features = nlp_embedder.clip_model.get_text_features(**inputs)
-                clip_txt_embs.append(F.normalize(text_features, p=2, dim=-1).squeeze(0).cpu().numpy())
+                    text_features = nlp_embedder.clip_model.encode(caption, convert_to_tensor=True).to(self.device)
+                clip_txt_embs.append(F.normalize(text_features.unsqueeze(0), p=2, dim=-1).squeeze(0).cpu().numpy())
 
                 captions_list.append(caption)
                 filenames_list.append(filename)
