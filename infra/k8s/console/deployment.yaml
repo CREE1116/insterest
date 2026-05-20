@@ -28,6 +28,6 @@ spec:
       containers:
       - name: console-frontend
         image: cree1116/console-frontend:latest
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         ports:
         - containerPort: 80
