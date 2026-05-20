@@ -9,8 +9,10 @@ import httpx
 from PIL import Image, ImageDraw
 from typing import List, Dict, Any, Tuple
 from sqlalchemy import text
-from app.ml.intelligence import nlp_embedder
-from app.core.logging import logger
+import logging
+from app.ml.nlp import nlp_embedder
+
+logger = logging.getLogger(__name__)
 
 class BenchmarkService:
     def __init__(self):
