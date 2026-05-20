@@ -122,79 +122,81 @@ class UnifiedIntelligenceService:
                                 limit: int = 20, skip: int = 0, use_personalization: bool = True,
                                 exclude_history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
         """
-        이미지 검색 + 개인화 추천:
-        - 이미지를 CLIP 모델을 통해 512차원 벡터로 변환
-        - 128차원 투영 레이어(image_proj)를 통과시켜 L2 정규화 수행
-        - 유저 취향(user_vec)이 있다면 퓨전하여 Redis HNSW 검색 수행
+        이미지 검색 + 개인화 추천 (최적화 버전):
+        1. 이미지를 CLIP 모델을 통해 512차원 벡터로 변환 및 L2 정규화
+        2. DB의 모든 포스트의 512차원 CLIP 이미지 벡터들과 코사인 유사도를 계산
+        3. 만약 개인화 추천(user_id)이 필요하다면, 사용자 선호 이력의 이미지 벡터들과의 코사인 유사도 점수와 결합(0.7 * 비주얼 유사도 + 0.3 * 개인 선호도)
+        4. 정렬 후 결과를 반환하여 완벽한 비주얼 서치를 지원합니다.
         """
         import torch.nn.functional as F
-        from app.ml.vector_store import vector_store
         try:
-            # 1. 이미지 벡터 계산 (CLIP 512차원)
-            raw_img_vec = nlp_embedder.embed_image(image_bytes).to(self.device).unsqueeze(0)
+            # 1. 이미지 CLIP 512차원 벡터 추출
+            raw_img_vec = nlp_embedder.embed_image(image_bytes).to(self.device)
+            # 만약 0차원 벡터라면(에러 발생 시) 최신순 폴백
+            if torch.norm(raw_img_vec) < 1e-6:
+                raise ValueError("Generated raw image vector is zero")
             
-            with torch.no_grad():
-                # 512d -> 128d 투영 및 normalization
-                img_query_vec_128 = F.normalize(self.model.image_proj(raw_img_vec), p=2, dim=-1).squeeze(0).cpu().numpy()
+            raw_img_vec_norm = F.normalize(raw_img_vec, p=2, dim=-1)
 
-            # 2. 유저 히스토리 → 유저 벡터 계산
-            user_vec = None
+            # 2. 모든 포스트 로드
+            res = await db.execute(select(PostVector))
+            posts = res.scalars().all()
+            if not posts:
+                return []
+
+            # 3. 사용자 행동 이력(좋아요 누른 포스트들의 이미지 벡터) 확인 (개인화용)
+            user_hist_img_norms = []
             if user_id and use_personalization:
                 stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at ASC LIMIT 10")
-                res = await db.execute(stmt, {"uid": user_id})
-                history_ids = [row[0] for row in res.all()]
-
+                res_likes = await db.execute(stmt, {"uid": user_id})
+                history_ids = [row[0] for row in res_likes.all()]
                 if history_ids:
-                    res = await db.execute(select(PostVector).where(PostVector.post_id.in_(history_ids)))
-                    p_vectors = {v.post_id: v for v in res.scalars().all()}
+                    res_hist = await db.execute(select(PostVector).where(PostVector.post_id.in_(history_ids)))
+                    hist_posts = res_hist.scalars().all()
+                    for hp in hist_posts:
+                        hp_vec = torch.from_numpy(np.frombuffer(hp.image_vector, dtype=np.float32).copy()).to(self.device)
+                        if torch.norm(hp_vec) > 1e-6:
+                            user_hist_img_norms.append(F.normalize(hp_vec, p=2, dim=-1))
 
-                    hist_embs = []
-                    with torch.no_grad():
-                        for h_id in history_ids:
-                            if h_id in p_vectors:
-                                v = p_vectors[h_id]
-                                c = torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                                t = torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                                img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                                hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
+            # 4. 코사인 유사도 계산
+            exclude_set = set(str(i) for i in (exclude_history_ids or []))
+            scored_posts = []
 
-                        if hist_embs:
-                            n = len(hist_embs)
-                            weights = torch.tensor(
-                                [0.5 ** (n - 1 - i) for i in range(n)],
-                                dtype=torch.float32, device=self.device
-                            )
-                            weights = weights / weights.sum()
-                            stacked = torch.stack(hist_embs)
-                            user_vec_t = (stacked * weights.unsqueeze(1)).sum(dim=0)
-                            user_vec = torch.nn.functional.normalize(user_vec_t, p=2, dim=-1).cpu().numpy()
+            for p in posts:
+                if str(p.post_id) in exclude_set:
+                    continue
 
-            # 3. 이미지 쿼리 vs 개인화 퓨전
-            if img_query_vec_128 is not None and user_vec is None:
-                search_vec = img_query_vec_128
-            elif img_query_vec_128 is not None and user_vec is not None:
-                with torch.no_grad():
-                    q_t = torch.from_numpy(img_query_vec_128).to(self.device)
-                    u_t = torch.from_numpy(user_vec).to(self.device)
-                    search_vec = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0).cpu().numpy()
-            else:
-                search_vec = None
+                p_img_vec = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device)
+                if torch.norm(p_img_vec) < 1e-6:
+                    continue  # 이미지 없는 글 제외
 
-            if search_vec is not None:
-                result_ids = vector_store.search_knn(search_vec, k=limit + len(exclude_history_ids or []) + skip)
-                exclude_set = set(str(i) for i in (exclude_history_ids or []))
-                filtered = [str(pid) for pid in result_ids if str(pid) not in exclude_set]
-                page = filtered[skip: skip + limit]
-                return [{"id": pid, "score": 1.0} for pid in page]
+                p_img_vec_norm = F.normalize(p_img_vec, p=2, dim=-1)
 
+                # (A) 비주얼 유사도 (Query Image <-> Post Image)
+                visual_sim = torch.dot(raw_img_vec_norm, p_img_vec_norm).item()
+
+                # (B) 유저 선호도 (User Likes History Images <-> Post Image)
+                user_pref_sim = 0.0
+                if user_hist_img_norms:
+                    # 유저 최신 선호 이력 이미지들과의 유사도 중 최대값 사용
+                    prefs = [torch.dot(uh_norm, p_img_vec_norm).item() for uh_norm in user_hist_img_norms]
+                    user_pref_sim = max(prefs)
+
+                # 최종 점수 계산 (검색 70%, 개인화 취향 30%)
+                final_score = 0.7 * visual_sim + 0.3 * user_pref_sim if user_hist_img_norms else visual_sim
+                scored_posts.append((str(p.post_id), final_score))
+
+            # 5. 정렬 및 페이징
+            scored_posts.sort(key=lambda x: x[1], reverse=True)
+            page = scored_posts[skip: skip + limit]
+            return [{"id": pid, "score": score} for pid, score in page]
+
+        except Exception as e:
+            logger.error(f"❌ Error in discover_by_image: {e}", exc_info=True)
             # Fallback: 최신순
             stmt = text("SELECT id FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
             res = await db.execute(stmt, {"l": limit, "s": skip})
             return [{"id": str(row[0]), "score": 0.0} for row in res.all()]
-
-        except Exception as e:
-            logger.error(f"❌ Error in discover_by_image: {e}", exc_info=True)
-            return []
 
     async def index_post(self, db: AsyncSession, post_id: uuid.UUID, 
                          caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray,
