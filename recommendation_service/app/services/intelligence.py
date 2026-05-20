@@ -42,14 +42,14 @@ class UnifiedIntelligenceService:
         """
         from app.ml.vector_store import vector_store
         try:
-            # 1. 검색어 벡터 계산
-            query_vec_128 = None
+            # 1. 검색어 벡터 계산 (CLIP text → 512-dim)
+            query_vec = None
             if query_text:
-                raw_vec = nlp_embedder.embed_text(query_text).to(self.device).unsqueeze(0)
                 with torch.no_grad():
-                    query_vec_128 = self.model.get_query_embedding(raw_vec).squeeze(0).cpu().numpy()
+                    raw_vec = nlp_embedder.embed_text_clip(query_text).unsqueeze(0)
+                    query_vec = self.model.get_query_embedding(raw_vec).squeeze(0).cpu().numpy()
 
-            # 2. 유저 히스토리 → 유저 벡터 계산
+            # 2. 유저 히스토리 → UserTower → 512-dim user_vec
             user_vec = None
             if (user_id or history_ids) and use_personalization:
                 if not history_ids and user_id:
@@ -66,32 +66,35 @@ class UnifiedIntelligenceService:
                         for h_id in history_ids:
                             if h_id in p_vectors:
                                 v = p_vectors[h_id]
-                                c = torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                                t = torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                cap_bytes = v.caption_vector
+                                # Handle legacy SBERT 768-dim
+                                if len(cap_bytes) == 768 * 4:
+                                    meta = v.content_text or {}
+                                    mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
+                                    if not mood:
+                                        continue
+                                    c = nlp_embedder.embed_text_clip(mood).unsqueeze(0).to(self.device)
+                                else:
+                                    c = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                 img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                                hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
+                                hist_embs.append(self.model.get_item_embedding(c, img).squeeze(0))
 
                         if hist_embs:
-                            # UserTower (Attention + GRU) 통과 — 훈련과 동일한 경로
-                            # history_ids는 ASC(오래된 순) → 최신이 뒤쪽 슬롯에 오도록 배치
                             seq_len = 10
-                            padded = torch.zeros(1, seq_len, 128, device=self.device)
+                            padded = torch.zeros(1, seq_len, 512, device=self.device)
                             for i, emb in enumerate(hist_embs[-seq_len:]):
                                 padded[0, i] = emb
                             user_vec = self.model.get_user_embedding(padded).squeeze(0).cpu().numpy()
 
-            # 3. 검색 vs 추천 분리
-            if query_vec_128 is not None and user_vec is None:
-                # ── 순수 검색: 퓨전 없이 쿼리 벡터 그대로 ANN 검색 ──
-                search_vec = query_vec_128
-
-            elif query_vec_128 is not None or user_vec is not None:
-                # ── 개인화 추천 (or 검색+추천 혼합): Discovery Fusion ──
+            # 3. 검색 / 추천 / 혼합 분기
+            if query_vec is not None and user_vec is None:
+                search_vec = query_vec
+            elif query_vec is not None or user_vec is not None:
                 with torch.no_grad():
-                    q_t = torch.from_numpy(query_vec_128).to(self.device) if query_vec_128 is not None \
-                          else torch.zeros(128, device=self.device)
+                    q_t = torch.from_numpy(query_vec).to(self.device) if query_vec is not None \
+                          else torch.zeros(512, device=self.device)
                     u_t = torch.from_numpy(user_vec).to(self.device) if user_vec is not None \
-                          else torch.zeros(128, device=self.device)
+                          else torch.zeros(512, device=self.device)
                     search_vec = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0).cpu().numpy()
             else:
                 search_vec = None
@@ -117,96 +120,68 @@ class UnifiedIntelligenceService:
                                 limit: int = 20, skip: int = 0, use_personalization: bool = True,
                                 exclude_history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
         """
-        이미지 검색 + 개인화 추천 (Redis 고속 512차원 검색 최적화 버전):
-        1. 이미지를 CLIP 모델을 통해 512차원 벡터로 변환 및 L2 정규화
-        2. Redis HNSW 인덱스의 @image_vector 필드를 통해 512차원 고속 근사 이웃 검색 (Candidate Generation)
-        3. 반환된 후보 포스트들을 기반으로 DB에서 상세 벡터를 조회하여 재정렬 (Re-ranking)
-        4. 개인화 추천(user_id)이 활성화되어 있다면 사용자의 시각 선호도와 결합하여 정렬
+        이미지 검색: CLIP image → 512-dim → 통합 item 벡터 인덱스 검색.
+        item 벡터 = normalize(CLIP_text + CLIP_image) 이므로 이미지 쿼리가 자연스럽게 정렬됨.
         """
         import torch.nn.functional as F
         from app.ml.vector_store import vector_store
         try:
-            # 1. 이미지 CLIP 512차원 벡터 추출 및 정규화
             raw_img_vec = nlp_embedder.embed_image(image_bytes).to(self.device)
             if torch.norm(raw_img_vec) < 1e-6:
-                raise ValueError("Generated raw image vector is zero")
-            
-            raw_img_vec_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
+                raise ValueError("Image vector is zero")
 
-            # 2. Redis 512차원 HNSW 고속 검색 (후보군 생성)
-            k_search = limit + len(exclude_history_ids or []) + skip + 50
-            candidate_ids = vector_store.search_knn(raw_img_vec_norm, k=k_search, vector_field="image_vector")
-            if not candidate_ids:
-                return []
-
-            # 3. 후보군 포스트 데이터만 DB에서 조회
-            res = await db.execute(select(PostVector).where(PostVector.post_id.in_(candidate_ids)))
-            posts = res.scalars().all()
-            if not posts:
-                return []
-
-            # 4. 사용자 행동 이력(좋아요 누른 이미지 벡터) 확인 (개인화용)
-            user_hist_img_norms = []
+            # 개인화 있으면 discovery fusion, 없으면 raw image vec
             if user_id and use_personalization:
-                stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at ASC LIMIT 10")
-                res_likes = await db.execute(stmt, {"uid": user_id})
-                history_ids = [row[0] for row in res_likes.all()]
-                if history_ids:
-                    res_hist = await db.execute(select(PostVector).where(PostVector.post_id.in_(history_ids)))
-                    hist_posts = res_hist.scalars().all()
-                    for hp in hist_posts:
-                        hp_vec = torch.from_numpy(np.frombuffer(hp.image_vector, dtype=np.float32).copy()).to(self.device)
-                        if torch.norm(hp_vec) > 1e-6:
-                            user_hist_img_norms.append(F.normalize(hp_vec, p=2, dim=-1))
-
-            # 5. 코사인 유사도 계산 및 개인 선호도 결합 (재정렬)
-            exclude_set = set(str(i) for i in (exclude_history_ids or []))
-            scored_posts = []
-
-            for p in posts:
-                if str(p.post_id) in exclude_set:
-                    continue
-
-                p_img_vec = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device)
-                if torch.norm(p_img_vec) < 1e-6:
-                    continue
-
-                p_img_vec_norm = F.normalize(p_img_vec, p=2, dim=-1)
-
-                # (A) 비주얼 유사도
-                visual_sim = torch.dot(torch.from_numpy(raw_img_vec_norm).to(self.device), p_img_vec_norm).item()
-
-                # (B) 유저 선호도
-                user_pref_sim = 0.0
-                if user_hist_img_norms:
-                    prefs = [torch.dot(uh_norm, p_img_vec_norm).item() for uh_norm in user_hist_img_norms]
-                    user_pref_sim = max(prefs)
-
-                # 최종 점수 계산 (검색 70%, 개인화 취향 30%)
-                final_score = 0.7 * visual_sim + 0.3 * user_pref_sim if user_hist_img_norms else visual_sim
-                scored_posts.append((str(p.post_id), final_score))
-
-            # 6. 정렬 및 페이징
-            scored_posts.sort(key=lambda x: x[1], reverse=True)
-            page = scored_posts[skip: skip + limit]
-            return [{"id": pid, "score": score} for pid, score in page]
+                results = await self.discover(
+                    db, query_text=None, user_id=user_id,
+                    limit=limit, skip=skip, use_personalization=True,
+                    exclude_history_ids=exclude_history_ids,
+                )
+                # image 쿼리와 discovery 결과를 블렌딩: image 70% + user 30%
+                img_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
+                k_search = limit + len(exclude_history_ids or []) + skip + 20
+                img_ids = vector_store.search_knn(img_norm, k=k_search)
+                exclude_set = set(str(i) for i in (exclude_history_ids or []))
+                img_ids_str = [str(i) for i in img_ids if str(i) not in exclude_set]
+                # rank-based blend
+                img_rank = {pid: r for r, pid in enumerate(img_ids_str)}
+                disc_rank = {r["id"]: r2 for r2, r in enumerate(results)}
+                all_ids = list(dict.fromkeys(img_ids_str + [r["id"] for r in results]))
+                scored = []
+                for pid in all_ids:
+                    s_img  = 1.0 / (1 + img_rank.get(pid, 999))
+                    s_disc = 1.0 / (1 + disc_rank.get(pid, 999))
+                    scored.append((pid, 0.7 * s_img + 0.3 * s_disc))
+                scored.sort(key=lambda x: x[1], reverse=True)
+                page = scored[skip: skip + limit]
+                return [{"id": pid, "score": s} for pid, s in page]
+            else:
+                img_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
+                k_search = limit + len(exclude_history_ids or []) + skip
+                result_ids = vector_store.search_knn(img_norm, k=k_search)
+                exclude_set = set(str(i) for i in (exclude_history_ids or []))
+                filtered = [str(i) for i in result_ids if str(i) not in exclude_set]
+                page = filtered[skip: skip + limit]
+                return [{"id": pid, "score": 1.0} for pid in page]
 
         except Exception as e:
             logger.error(f"❌ Error in discover_by_image: {e}", exc_info=True)
-            # Fallback: 최신순
             stmt = text("SELECT id FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
             res = await db.execute(stmt, {"l": limit, "s": skip})
             return [{"id": str(row[0]), "score": 0.0} for row in res.all()]
 
-    async def index_post(self, db: AsyncSession, post_id: uuid.UUID, 
+    async def index_post(self, db: AsyncSession, post_id: uuid.UUID,
                          caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray,
                          metadata: Dict[str, Any]):
         """
         포스트 벡터를 DB와 Redis에 동시 인덱싱합니다.
+        caption_vec: CLIP text 512-dim (mood = caption + image_prompt + music_prompt)
+        image_vec  : CLIP image 512-dim
+        hashtag_vec: kept for DB schema compat, not used for search
         """
         try:
             from app.ml.vector_store import vector_store
-            
+
             # 1. DB (PostgreSQL) 저장
             pv = PostVector(
                 post_id=post_id,
@@ -217,38 +192,67 @@ class UnifiedIntelligenceService:
             )
             db.add(pv)
             await db.commit()
-            
+
             # 2. Redis Vector Store 저장 (실시간 검색용)
-            # 128차원 투영 퓨전 벡터와 512차원 이미지 벡터 저장
+            # 512-dim CLIP 통합 아이템 벡터: normalize(CLIP_text + CLIP_image)
             with torch.no_grad():
                 c = torch.from_numpy(caption_vec).to(self.device).unsqueeze(0)
-                t = torch.from_numpy(hashtag_vec).to(self.device).unsqueeze(0)
                 img = torch.from_numpy(image_vec).to(self.device).unsqueeze(0)
-                p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
-            
-            vector_store.upsert_vector(str(post_id), p_vec_128, image_vector=image_vec, metadata=metadata)
-            
+                p_vec = self.model.get_item_embedding(c, img).squeeze(0).cpu().numpy()
+
+            vector_store.upsert_vector(str(post_id), p_vec, metadata=metadata)
+
         except Exception as e:
             logger.error(f"❌ Indexing failed for {post_id}: {e}")
 
     async def backfill_all_posts(self, db: AsyncSession):
         """
         DB의 모든 포스트를 Redis Vector Store에 재동기화합니다.
+        레거시 SBERT 768-dim caption_vector 감지 시 metadata에서 CLIP 재인코딩.
         """
         try:
             from app.ml.vector_store import vector_store
+            from sqlalchemy import update as sa_update
             res = await db.execute(select(PostVector))
             posts = res.scalars().all()
+            count = 0
             for p in posts:
-                with torch.no_grad():
-                    c = torch.from_numpy(np.frombuffer(p.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                    t = torch.from_numpy(np.frombuffer(p.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                    img = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                    p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
-                    
-                p_img_512 = np.frombuffer(p.image_vector, dtype=np.float32).copy()
-                vector_store.upsert_vector(str(p.post_id), p_vec_128, image_vector=p_img_512, metadata=p.content_text)
-            logger.info(f"✅ Backfilled {len(posts)} posts to Redis.")
+                try:
+                    cap_bytes = p.caption_vector
+                    img_bytes = p.image_vector
+
+                    with torch.no_grad():
+                        # 768*4=3072 bytes → old SBERT vector → re-encode from metadata
+                        if len(cap_bytes) == 768 * 4:
+                            meta = p.content_text or {}
+                            caption = meta.get("caption", "")
+                            image_prompt = meta.get("image_prompt", "")
+                            music_prompt = meta.get("music_prompt", "")
+                            mood_text = f"{caption} {image_prompt} {music_prompt}".strip()
+                            if not mood_text:
+                                logger.warning(f"⚠️ No text for {p.post_id}, skipping backfill")
+                                continue
+                            c_t = nlp_embedder.embed_text_clip(mood_text).unsqueeze(0).to(self.device)
+                            # Update DB record to new 512-dim vector
+                            new_cap_bytes = c_t.squeeze(0).cpu().numpy().astype(np.float32).tobytes()
+                            await db.execute(
+                                sa_update(PostVector)
+                                .where(PostVector.post_id == p.post_id)
+                                .values(caption_vector=new_cap_bytes)
+                            )
+                        else:
+                            c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+
+                        img_t = torch.from_numpy(np.frombuffer(img_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                        p_vec = self.model.get_item_embedding(c_t, img_t).squeeze(0).cpu().numpy()
+
+                    vector_store.upsert_vector(str(p.post_id), p_vec, metadata=p.content_text)
+                    count += 1
+                except Exception as e:
+                    logger.error(f"❌ Backfill failed for {p.post_id}: {e}")
+
+            await db.commit()
+            logger.info(f"✅ Backfilled {count}/{len(posts)} posts to Redis.")
         except Exception as e:
             logger.error(f"❌ Backfill failed: {e}")
 
@@ -260,12 +264,12 @@ class UnifiedIntelligenceService:
 
     async def train_discovery(self, db: AsyncSession):
         """
-        2-Phase 학습:
-        Phase 1 - 아이템 타워: 캡션+해시태그(anchor) → 이미지 정렬 (CLIP-style)
-        Phase 2 - 유저/쿼리 타워: 동결된 아이템 임베딩으로 InfoNCE 학습
+        UserTower InfoNCE 학습 (Single Phase).
+        아이템 벡터는 CLIP 고정값 — projection 학습 불필요.
         """
         try:
             total_start = time.time()
+            BATCH = 32
 
             # ── 데이터 로드 ──────────────────────────────
             res = await db.execute(text("SELECT user_id, post_id FROM interaction.likes ORDER BY created_at ASC LIMIT 1000"))
@@ -281,99 +285,73 @@ class UnifiedIntelligenceService:
                 return
             p_vectors = {v.post_id: v for v in all_vectors}
 
-            # ── Phase 1: 아이템 타워 학습 (50 에폭) ─────
-            logger.info("🔵 [Phase 1] Item Tower training (caption+hashtag → image alignment)...")
-            PHASE1_EPOCHS = 50
-            BATCH = 32
+            if len(user_sequences) < 2:
+                logger.info("ℹ️ Skipped (not enough likes data — search only mode)")
+                return
 
-            # 전체 포스트 텐서 사전 로드
-            all_caps = torch.stack([
-                torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy())
-                for v in all_vectors
-            ]).to(self.device)
-            all_tags = torch.stack([
-                torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy())
-                for v in all_vectors
-            ]).to(self.device)
-            all_imgs = torch.stack([
-                torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy())
-                for v in all_vectors
-            ]).to(self.device)
+            logger.info("🟢 [UserTower] InfoNCE training on CLIP item embeddings...")
 
-            n = len(all_vectors)
-            for epoch in range(PHASE1_EPOCHS):
-                idx = torch.randperm(n)
+            # 아이템 임베딩 사전 계산 (CLIP 고정, 학습 불필요)
+            item_emb_lookup: Dict[Any, torch.Tensor] = {}
+            with torch.no_grad():
+                for v in all_vectors:
+                    cap_bytes = v.caption_vector
+                    # Handle legacy SBERT 768-dim vectors
+                    if len(cap_bytes) == 768 * 4:
+                        meta = v.content_text or {}
+                        mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
+                        c_t = nlp_embedder.embed_text_clip(mood).unsqueeze(0).to(self.device) if mood else \
+                              torch.zeros(1, 512, device=self.device)
+                    else:
+                        c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    item_emb_lookup[v.post_id] = self.model.get_item_embedding(c_t, img_t).squeeze(0).detach()
+
+            train_data = []
+            for uid, pids in user_sequences.items():
+                for i in range(1, len(pids)):
+                    hist = pids[:i][-10:]
+                    target = pids[i]
+                    if target in p_vectors and all(h in p_vectors for h in hist):
+                        train_data.append((hist, target))
+
+            EPOCHS = 50
+            for epoch in range(EPOCHS):
+                random.shuffle(train_data)
                 total_loss = 0.0
-                for i in range(0, n, BATCH):
-                    b = idx[i:i+BATCH]
-                    loss = self.trainer.train_item_tower_step(
-                        all_caps[b], all_tags[b], all_imgs[b]
+                for i in range(0, len(train_data), BATCH):
+                    batch = train_data[i:i+BATCH]
+                    hist_embs, target_vecs, query_caps = [], [], []
+                    for hist, target in batch:
+                        h_embs = [item_emb_lookup[h_id] for h_id in hist]
+                        while len(h_embs) < 10:
+                            h_embs.insert(0, torch.zeros(512, device=self.device))
+                        hist_embs.append(torch.stack(h_embs))
+                        target_vecs.append(item_emb_lookup[target])
+                        # query = CLIP text of target item
+                        pv_t = p_vectors[target]
+                        cap_bytes = pv_t.caption_vector
+                        if len(cap_bytes) == 768 * 4:
+                            meta = pv_t.content_text or {}
+                            mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
+                            with torch.no_grad():
+                                qv = nlp_embedder.embed_text_clip(mood).to(self.device) if mood else \
+                                     torch.zeros(512, device=self.device)
+                        else:
+                            qv = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device)
+                        query_caps.append(qv)
+
+                    loss = self.trainer.train_user_query_step(
+                        torch.stack(hist_embs),
+                        torch.stack(target_vecs),
+                        torch.stack(query_caps),
                     )
                     total_loss += loss
                 if (epoch + 1) % 10 == 0:
-                    logger.info(f"  [Phase1] Epoch {epoch+1}/{PHASE1_EPOCHS} loss={total_loss:.4f}")
+                    logger.info(f"  Epoch {epoch+1}/{EPOCHS} loss={total_loss:.4f}")
 
-            logger.info("✅ [Phase 1] Item Tower training complete.")
-
-            # ── Phase 2: 유저/쿼리 타워 학습 (좋아요 데이터 있을 때만) ──
-            if len(user_sequences) >= 2:
-                logger.info("🟢 [Phase 2] User/Query Tower training on FROZEN item embeddings...")
-
-                # 아이템 타워 완전 동결 후 임베딩 한 번에 사전 계산
-                item_emb_lookup: Dict[Any, torch.Tensor] = {}
-                with torch.no_grad():
-                    for idx_v, v in enumerate(all_vectors):
-                        emb = self.model.get_item_embedding(
-                            all_caps[idx_v].unsqueeze(0),
-                            all_tags[idx_v].unsqueeze(0),
-                            all_imgs[idx_v].unsqueeze(0)
-                        ).squeeze(0).detach()
-                        item_emb_lookup[v.post_id] = emb
-
-                train_data = []
-                for uid, pids in user_sequences.items():
-                    for i in range(1, len(pids)):
-                        hist = pids[:i][-10:]
-                        target = pids[i]
-                        if target in p_vectors and all(h in p_vectors for h in hist):
-                            train_data.append((hist, target))
-
-                PHASE2_EPOCHS = 50
-                for epoch in range(PHASE2_EPOCHS):
-                    random.shuffle(train_data)
-                    total_loss = 0.0
-                    for i in range(0, len(train_data), BATCH):
-                        batch = train_data[i:i+BATCH]
-                        hist_embs, target_vecs, query_caps = [], [], []
-                        for hist, target in batch:
-                            h_embs = [item_emb_lookup[h_id] for h_id in hist]
-                            while len(h_embs) < 10:
-                                h_embs.insert(0, torch.zeros(128, device=self.device))
-                            hist_embs.append(torch.stack(h_embs))
-                            target_vecs.append(item_emb_lookup[target])
-                            pv_t = p_vectors[target]
-                            query_caps.append(torch.from_numpy(
-                                np.frombuffer(pv_t.caption_vector, dtype=np.float32).copy()
-                            ).to(self.device))
-
-                        loss = self.trainer.train_user_query_step(
-                            torch.stack(hist_embs),
-                            torch.stack(target_vecs),
-                            torch.stack(query_caps),
-                        )
-                        total_loss += loss
-                    if (epoch + 1) % 10 == 0:
-                        logger.info(f"  [Phase2] Epoch {epoch+1}/{PHASE2_EPOCHS} loss={total_loss:.4f}")
-
-                logger.info("✅ [Phase 2] User/Query Tower training complete.")
-
-            else:
-                logger.info("ℹ️ [Phase 2] Skipped (not enough likes data — search only mode)")
-
-            # ── 모델 저장 + Redis 동기화 ────────────────
+            logger.info("✅ [UserTower] Training complete.")
             self.trainer.save_model(settings.MODEL_SAVE_PATH)
-            logger.info("🔄 [Sync] Backfilling Redis vectors with newly trained item tower...")
-            await self.backfill_all_posts(db)
             logger.info(f"✅ Total Training Pipeline: {time.time()-total_start:.2f}s")
 
         except Exception as e:

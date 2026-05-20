@@ -14,8 +14,8 @@ from app.ml.nlp import nlp_embedder
 logger = logging.getLogger(__name__)
 
 async def consume_post_created():
-    """Kafka에서 포스트 생성/수정 메시지를 소비하여 MLP 투영 기반 128차원 인덱싱 수행"""
-    logger.info(f"Initializing MLP-based Multi-modal Kafka Consumer... Servers: {settings.KAFKA_BOOTSTRAP_SERVERS}")
+    """Kafka에서 포스트 생성/수정 메시지를 소비하여 CLIP 512-dim 통합 벡터로 인덱싱"""
+    logger.info(f"Initializing CLIP-unified Kafka Consumer... Servers: {settings.KAFKA_BOOTSTRAP_SERVERS}")
     
     consumer = AIOKafkaConsumer(
         "recommendation.post_created",
@@ -41,29 +41,32 @@ async def consume_post_created():
                     if res.status_code != 200: continue
                     post_data = res.json()
                     
-                    # 2. 개별 모달리티 768차원 벡터 생성
+                    # 2. 무드 벡터 생성 (CLIP 512-dim)
                     caption = post_data.get("caption") or ""
-                    image_prompt = post_data.get("content", {}).get("generation_meta", {}).get("image_prompt") or ""
-                    base_text = f"{caption} {image_prompt}".strip()
-                    
+                    gen_meta = post_data.get("content", {}).get("generation_meta", {}) or {}
+                    image_prompt = gen_meta.get("image_prompt") or ""
+                    music_prompt = gen_meta.get("music_prompt") or ""
+                    # 무드 = 캡션 + 이미지 프롬프트 + 음악 프롬프트 통합 텍스트
+                    mood_text = f"{caption} {image_prompt} {music_prompt}".strip()
+
                     hashtags = post_data.get("hashtags", [])
                     hashtag_texts = [h["tag"] if isinstance(h, dict) else str(h) for h in hashtags]
-                    
-                    # (A) 캡션 벡터
-                    c_vec = nlp_embedder.embed_text(base_text).cpu().numpy() if base_text else np.zeros(768, dtype=np.float32)
-                    
-                    # (B) 해시태그 평균 벡터
+
+                    # (A) 무드 텍스트 벡터 (CLIP 512-dim)
+                    c_vec = nlp_embedder.embed_text_clip(mood_text).cpu().numpy() if mood_text else np.zeros(512, dtype=np.float32)
+
+                    # (B) 해시태그 평균 벡터 (CLIP 512-dim, DB 저장용)
                     if hashtag_texts:
-                        h_vecs = nlp_embedder.embed_batch(hashtag_texts)
+                        h_vecs = nlp_embedder.embed_batch_clip(hashtag_texts)
                         h_vec = torch.mean(h_vecs, dim=0).cpu().numpy()
                     else:
-                        h_vec = np.zeros(768, dtype=np.float32)
-                        
-                    # (C) 이미지 벡터 (CLIP)
+                        h_vec = np.zeros(512, dtype=np.float32)
+
+                    # (C) 이미지 벡터 (CLIP 512-dim)
                     i_vec = np.zeros(512, dtype=np.float32)
                     media_list = post_data.get("content", {}).get("media_list", [])
                     image_url = next((m["url"] for m in media_list if m["type"] == "image"), None)
-                    
+
                     if image_url:
                         try:
                             full_image_url = f"{settings.UPLOAD_SERVICE_URL}{image_url}" if image_url.startswith("/") else image_url
@@ -73,10 +76,13 @@ async def consume_post_created():
                         except Exception as img_e:
                             logger.error(f"❌ Image fetch error: {img_e}")
 
-                    # 3. 인덱싱 (MLP 투영 및 128차원 저장)
+                    # 3. CLIP 512-dim 통합 인덱싱
                     async with AsyncSessionLocal() as db:
-                        await intel_service.index_post(db, post_id, c_vec, h_vec, i_vec, metadata={"caption": caption})
-                        logger.info(f"✅ Multi-modal MLP indexing complete for {post_id}")
+                        await intel_service.index_post(
+                            db, post_id, c_vec, h_vec, i_vec,
+                            metadata={"caption": caption, "image_prompt": image_prompt, "music_prompt": music_prompt}
+                        )
+                        logger.info(f"✅ CLIP-unified indexing complete for {post_id}")
                         
             except Exception as e:
                 logger.error(f"❌ Processing error: {e}", exc_info=True)

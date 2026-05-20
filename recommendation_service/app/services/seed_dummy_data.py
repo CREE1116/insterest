@@ -46,8 +46,8 @@ async def seed():
             if (i + 1) % 20 == 0:
                 print(f"📦 생성 중... ({i+1}/{len(dummy_posts)})")
             
-            c_vec = nlp_embedder.embed_text(caption).cpu().numpy()
-            h_vec = nlp_embedder.embed_text(tags).cpu().numpy()
+            c_vec = nlp_embedder.embed_text_clip(caption).cpu().numpy()
+            h_vec = nlp_embedder.embed_text_clip(tags).cpu().numpy()
             i_vec = np.random.randn(512).astype(np.float32)
             
             await intel_service.index_post(

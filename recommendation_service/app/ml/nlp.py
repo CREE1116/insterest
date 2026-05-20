@@ -43,6 +43,23 @@ class NLPEmbedder:
             embeddings = self.model.encode(texts, convert_to_tensor=True)
         return embeddings.to(dtype=torch.float32)
 
+    def embed_text_clip(self, text: str) -> torch.Tensor:
+        """
+        CLIP 텍스트 인코더: 512-dim, embed_image()와 동일한 공간.
+        캡션/검색어를 이미지와 직접 비교 가능.
+        """
+        with torch.no_grad():
+            embedding = self.clip_model.encode(text, convert_to_tensor=True)
+        return embedding.to(self.device, dtype=torch.float32)
+
+    def embed_batch_clip(self, texts: list) -> torch.Tensor:
+        """CLIP 텍스트 배치 인코딩: [N, 512]"""
+        if not texts:
+            return torch.zeros((0, 512), device=self.device)
+        with torch.no_grad():
+            embeddings = self.clip_model.encode(texts, convert_to_tensor=True)
+        return embeddings.to(self.device, dtype=torch.float32)
+
     def embed_image(self, image_bytes: bytes) -> torch.Tensor:
         """
         이미지 바이너리를 입력받아 CLIP 벡터를 생성합니다.

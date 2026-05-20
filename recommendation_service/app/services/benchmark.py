@@ -348,8 +348,8 @@ class BenchmarkService:
                     await db.rollback()
                     continue
 
-                c_vec = F.normalize(nlp_embedder.embed_text(caption).to(self.device), p=2, dim=-1).cpu().numpy()
-                h_embs = nlp_embedder.embed_batch(hashtags)
+                c_vec = F.normalize(nlp_embedder.embed_text_clip(caption).to(self.device), p=2, dim=-1).cpu().numpy()
+                h_embs = nlp_embedder.embed_batch_clip(hashtags)
                 h_vec = F.normalize(torch.mean(h_embs, dim=0).to(self.device), p=2, dim=-1).cpu().numpy()
                 i_vec = F.normalize(nlp_embedder.embed_image(img_bytes).to(self.device), p=2, dim=-1).cpu().numpy()
                 try:

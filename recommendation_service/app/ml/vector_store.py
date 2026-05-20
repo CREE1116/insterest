@@ -9,18 +9,15 @@ logger = logging.getLogger(__name__)
 
 class RedisVectorStore:
     """
-    Real-time persistence for projected 128-dim vectors and raw 512-dim image vectors in Redis
+    Single 512-dim HNSW index in CLIP's unified text+image space.
+    Text queries, image queries, and user preference vectors all land in the same space.
     """
     def __init__(self):
         self.r = redis.Redis(host=settings.REDIS_HOST, port=settings.RECO_REDIS_PORT, decode_responses=False)
         self.index_name = "post_vectors"
 
     def create_index(self):
-        """
-        Create HNSW Index for both 128-dim and 512-dim vectors
-        """
         try:
-            # Drop old index to force schema update
             try:
                 self.r.execute_command("FT.DROPINDEX", self.index_name)
                 logger.info(f"Dropped old Redis index: {self.index_name}")
@@ -35,18 +32,14 @@ class RedisVectorStore:
                 "post_id", "TAG",
                 "vector", "VECTOR", "HNSW", "6",
                 "TYPE", "FLOAT32",
-                "DIM", "128",
-                "DISTANCE_METRIC", "COSINE",
-                "image_vector", "VECTOR", "HNSW", "6",
-                "TYPE", "FLOAT32",
                 "DIM", "512",
-                "DISTANCE_METRIC", "COSINE"
+                "DISTANCE_METRIC", "COSINE",
             )
-            logger.info(f"✅ Created Multi-Vector Redis HNSW Index: {self.index_name}")
+            logger.info(f"✅ Created 512-dim CLIP unified Redis HNSW Index: {self.index_name}")
         except redis.exceptions.ResponseError as e:
             logger.error(f"❌ Failed to create Redis index: {e}")
 
-    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray, image_vector: np.ndarray = None, metadata: Dict[str, Any] = None):
+    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray, image_vector: np.ndarray = None, metadata: Dict[str, Any] = None):  # image_vector kept for API compat, unused
         """
         128차원 투영 벡터, 512차원 이미지 벡터 및 메타데이터를 Redis에 저장
         """
