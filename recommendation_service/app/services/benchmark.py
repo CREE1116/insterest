@@ -295,8 +295,8 @@ class BenchmarkService:
                 break
         return per_class
 
-    async def inject_cifar_dataset(self, db) -> Dict[str, Dict[int, uuid.UUID]]:
-        """CIFAR-100 이미지를 DB와 Redis에 주입하고 {class: {sample_idx: post_id}} 반환."""
+    async def inject_cifar_dataset(self, db, per_class=None) -> Dict[str, Dict[int, uuid.UUID]]:
+        """CIFAR-100을 DB와 Redis에 주입. 이미 존재하는 데이터는 재사용, 없는 것만 삽입."""
         system_user_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
         try:
             check_user = await db.execute(text("SELECT id FROM auth.users WHERE id = :uid"), {"uid": system_user_id})
@@ -309,20 +309,48 @@ class BenchmarkService:
         except Exception as e:
             logger.warning(f"System user upsert: {e}")
 
-        from app.services.intelligence import intel_service
-        logger.info("📥 Downloading CIFAR-100 dataset...")
-        per_class = self._load_cifar100_samples()
-        total = sum(len(v) for v in per_class.values())
-        logger.info(f"✅ CIFAR-100 loaded. Injecting {total} samples ({len(per_class)} classes × {self.CIFAR100_SAMPLES_PER_CLASS})...")
+        # Load existing benchmark posts from DB
+        existing: Dict[str, Dict[int, uuid.UUID]] = {}
+        try:
+            res = await db.execute(text("""
+                SELECT p.id, pv.content_text
+                FROM upload.post p
+                JOIN search.post_vectors pv ON pv.post_id = p.id
+                WHERE p.user_id = :uid
+                  AND (pv.content_text->>'is_animal_benchmark')::boolean = true
+            """), {"uid": system_user_id})
+            for row in res.all():
+                pid, meta = row
+                if isinstance(meta, dict):
+                    cls = meta.get("animal_name")
+                    idx = meta.get("sample_idx")
+                    if cls is not None and idx is not None:
+                        existing.setdefault(cls, {})[int(idx)] = pid
+        except Exception as e:
+            logger.warning(f"Could not load existing benchmark data: {e}")
 
-        class_post_ids: Dict[str, Dict[int, uuid.UUID]] = {}
+        n_existing = sum(len(v) for v in existing.values())
+        if n_existing:
+            logger.info(f"♻️ Found {n_existing} existing benchmark posts ({len(existing)} classes). Injecting missing only...")
+
+        if per_class is None:
+            logger.info("📥 Loading CIFAR-100 dataset...")
+            per_class = self._load_cifar100_samples()
+
+        from app.services.intelligence import intel_service
+        class_post_ids: Dict[str, Dict[int, uuid.UUID]] = {k: dict(v) for k, v in existing.items()}
+        total_new = 0
+
         for class_name, imgs in per_class.items():
-            class_post_ids[class_name] = {}
+            if class_name not in class_post_ids:
+                class_post_ids[class_name] = {}
             for idx, pil_img in enumerate(imgs):
+                if idx in class_post_ids[class_name]:
+                    continue  # already exists — reuse
+
                 post_id = uuid.uuid4()
                 content_id = uuid.uuid4()
                 media_id = uuid.uuid4()
-                # Caption: label + sample number  /  Hashtag: label
                 caption = f"{class_name}, sample {idx + 1}"
                 hashtags = [class_name]
                 img_bytes = self._cifar_img_to_bytes(pil_img)
@@ -360,20 +388,72 @@ class BenchmarkService:
                                   "animal_name": class_name, "sample_idx": idx}
                     )
                     class_post_ids[class_name][idx] = post_id
+                    total_new += 1
                 except Exception as e:
                     logger.error(f"Redis index failed for {class_name}[{idx}]: {e}")
 
+        logger.info(f"✅ Benchmark dataset ready. {n_existing} reused + {total_new} newly injected.")
+
+        # Seed interactions for all benchmark posts (idempotent)
+        await self._seed_benchmark_interactions(db, class_post_ids)
+
         return class_post_ids
 
+    async def _seed_benchmark_interactions(self, db, class_post_ids: Dict[str, Dict[int, uuid.UUID]]) -> None:
+        """동물 벤치마크 포스트에 가상 좋아요 시드. 이미 있으면 스킵 (idempotent)."""
+        all_pids = [pid for pids in class_post_ids.values() for pid in pids.values()]
+        if not all_pids:
+            return
+
+        # Idempotency check: if any of the benchmark posts already have likes, skip
+        try:
+            res = await db.execute(
+                text("SELECT COUNT(*) FROM interaction.likes WHERE post_id = :pid"),
+                {"pid": all_pids[0]}
+            )
+            if (res.scalar() or 0) > 0:
+                logger.info("⏭️ Benchmark interactions already seeded. Skipping.")
+                return
+        except Exception as e:
+            logger.warning(f"Interaction check failed: {e}")
+
+        # 20 synthetic animal-lover personas
+        persona_names = [
+            "PetPhotographer", "WildlifeExplorer", "ZooKeeper", "AnimalRescuer",
+            "NatureLover", "CutePetAddict", "ExoticAnimalFan", "FarmLifeLover",
+            "MarineLifeEnthusiast", "BirdWatcher", "CatObsessed", "DogMom",
+            "RabbitsForever", "FoxyFollower", "TigerLover", "BearGrills",
+            "AquaticAdmirer", "HorsePerson", "MicroFaunaFan", "SafariSeeker",
+        ]
+
+        seeded = 0
+        for name in persona_names:
+            user_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"benchmark_{name}")
+            liked_pids = random.sample(all_pids, max(1, len(all_pids) * 4 // 10))
+            for i, pid in enumerate(liked_pids):
+                try:
+                    await db.execute(text("""
+                        INSERT INTO interaction.likes (user_id, post_id, created_at)
+                        VALUES (:u, :p, NOW() - INTERVAL '1 second' * :offset)
+                        ON CONFLICT DO NOTHING
+                    """), {"u": user_id, "p": pid, "offset": i})
+                    seeded += 1
+                except Exception as e:
+                    logger.warning(f"Interaction seed failed: {e}")
+
+        await db.commit()
+        logger.info(f"🎭 Seeded {seeded} benchmark interactions across {len(persona_names)} personas.")
+
     async def run_animal_db_benchmark(self, db) -> Dict[str, Any]:
-        """CIFAR-100 실제 이미지 200 샘플로 크로스모달 검색 정확도 벤치마크 후 자동 cleanup."""
-        class_post_ids = await self.inject_cifar_dataset(db)
+        """CIFAR-100 실제 이미지로 크로스모달 검색 정확도 벤치마크. 데이터는 유지된다."""
+        logger.info("📥 Loading CIFAR-100 dataset...")
+        per_class = self._load_cifar100_samples()
+        class_post_ids = await self.inject_cifar_dataset(db, per_class=per_class)
         all_post_ids = {pid for pids in class_post_ids.values() for pid in pids.values()}
         if len(all_post_ids) < 10:
             return {"status": "error", "message": f"Insufficient samples injected ({len(all_post_ids)})."}
 
         from app.services.intelligence import intel_service
-        per_class = self._load_cifar100_samples()
         total_samples = len(all_post_ids)
         search_limit = min(total_samples, 200)
 
@@ -430,8 +510,6 @@ class BenchmarkService:
         i2i["NDCG@3"] = float(np.mean([
             ndcg_map.get(d["image_rank"], 0.0) if isinstance(d["image_rank"], int) and d["image_rank"] <= 3 else 0.0
             for d in details]))
-
-        await self._cleanup_benchmark(db, all_post_ids)
 
         return {
             "status": "success",
