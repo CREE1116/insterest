@@ -134,43 +134,7 @@ class UnifiedIntelligenceService:
                             sorted_items.append((pid, 0.0))
                             existing_ids.add(pid)
 
-                # 다양성 확보: 페이지의 25%는 트렌딩/신규 콘텐츠로 채움
-                # trending_items가 부족하면 나머지 personalized로 채워 항상 limit개 반환
-                explore_slots = max(limit // 4, 3)
-                personalized_slice = sorted_items[skip: skip + limit - explore_slots]
-                personalized_ids = {pid for pid, _ in personalized_slice} | exclude_set
-
-                explore_stmt = text("""
-                    SELECT p.id FROM upload.post p
-                    LEFT JOIN (
-                        SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
-                    ) lc ON lc.post_id = p.id
-                    WHERE p.is_deleted = FALSE
-                    ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
-                             p.created_at DESC
-                    LIMIT :lim
-                """)
-                explore_res = await db.execute(explore_stmt, {"lim": explore_slots * 5 + 20})
-                trending_items = []
-                for row in explore_res.all():
-                    pid = str(row[0])
-                    if pid not in personalized_ids:
-                        trending_items.append((pid, 0.0))
-                        if len(trending_items) >= explore_slots:
-                            break
-
-                page = personalized_slice + trending_items
-
-                # trending_items가 explore_slots보다 적으면 나머지 personalized로 보충
-                if len(page) < limit:
-                    page_ids = {pid for pid, _ in page}
-                    for item in sorted_items[skip + limit - explore_slots:]:
-                        if item[0] not in page_ids:
-                            page.append(item)
-                            page_ids.add(item[0])
-                            if len(page) >= limit:
-                                break
-
+                page = sorted_items[skip: skip + limit]
                 return [{"id": pid, "score": float(score)} for pid, score in page]
 
             # Fallback: 쿼리도 유저도 없는 경우 → interaction.likes 실집계 기반 트렌딩
