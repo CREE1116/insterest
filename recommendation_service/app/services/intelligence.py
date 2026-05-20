@@ -122,29 +122,35 @@ class UnifiedIntelligenceService:
                                 limit: int = 20, skip: int = 0, use_personalization: bool = True,
                                 exclude_history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
         """
-        이미지 검색 + 개인화 추천 (최적화 버전):
+        이미지 검색 + 개인화 추천 (Redis 고속 512차원 검색 최적화 버전):
         1. 이미지를 CLIP 모델을 통해 512차원 벡터로 변환 및 L2 정규화
-        2. DB의 모든 포스트의 512차원 CLIP 이미지 벡터들과 코사인 유사도를 계산
-        3. 만약 개인화 추천(user_id)이 필요하다면, 사용자 선호 이력의 이미지 벡터들과의 코사인 유사도 점수와 결합(0.7 * 비주얼 유사도 + 0.3 * 개인 선호도)
-        4. 정렬 후 결과를 반환하여 완벽한 비주얼 서치를 지원합니다.
+        2. Redis HNSW 인덱스의 @image_vector 필드를 통해 512차원 고속 근사 이웃 검색 (Candidate Generation)
+        3. 반환된 후보 포스트들을 기반으로 DB에서 상세 벡터를 조회하여 재정렬 (Re-ranking)
+        4. 개인화 추천(user_id)이 활성화되어 있다면 사용자의 시각 선호도와 결합하여 정렬
         """
         import torch.nn.functional as F
+        from app.ml.vector_store import vector_store
         try:
-            # 1. 이미지 CLIP 512차원 벡터 추출
+            # 1. 이미지 CLIP 512차원 벡터 추출 및 정규화
             raw_img_vec = nlp_embedder.embed_image(image_bytes).to(self.device)
-            # 만약 0차원 벡터라면(에러 발생 시) 최신순 폴백
             if torch.norm(raw_img_vec) < 1e-6:
                 raise ValueError("Generated raw image vector is zero")
             
-            raw_img_vec_norm = F.normalize(raw_img_vec, p=2, dim=-1)
+            raw_img_vec_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
 
-            # 2. 모든 포스트 로드
-            res = await db.execute(select(PostVector))
+            # 2. Redis 512차원 HNSW 고속 검색 (후보군 생성)
+            k_search = limit + len(exclude_history_ids or []) + skip + 50
+            candidate_ids = vector_store.search_knn(raw_img_vec_norm, k=k_search, vector_field="image_vector")
+            if not candidate_ids:
+                return []
+
+            # 3. 후보군 포스트 데이터만 DB에서 조회
+            res = await db.execute(select(PostVector).where(PostVector.post_id.in_(candidate_ids)))
             posts = res.scalars().all()
             if not posts:
                 return []
 
-            # 3. 사용자 행동 이력(좋아요 누른 포스트들의 이미지 벡터) 확인 (개인화용)
+            # 4. 사용자 행동 이력(좋아요 누른 이미지 벡터) 확인 (개인화용)
             user_hist_img_norms = []
             if user_id and use_personalization:
                 stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at ASC LIMIT 10")
@@ -158,7 +164,7 @@ class UnifiedIntelligenceService:
                         if torch.norm(hp_vec) > 1e-6:
                             user_hist_img_norms.append(F.normalize(hp_vec, p=2, dim=-1))
 
-            # 4. 코사인 유사도 계산
+            # 5. 코사인 유사도 계산 및 개인 선호도 결합 (재정렬)
             exclude_set = set(str(i) for i in (exclude_history_ids or []))
             scored_posts = []
 
@@ -168,17 +174,16 @@ class UnifiedIntelligenceService:
 
                 p_img_vec = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device)
                 if torch.norm(p_img_vec) < 1e-6:
-                    continue  # 이미지 없는 글 제외
+                    continue
 
                 p_img_vec_norm = F.normalize(p_img_vec, p=2, dim=-1)
 
-                # (A) 비주얼 유사도 (Query Image <-> Post Image)
-                visual_sim = torch.dot(raw_img_vec_norm, p_img_vec_norm).item()
+                # (A) 비주얼 유사도
+                visual_sim = torch.dot(torch.from_numpy(raw_img_vec_norm).to(self.device), p_img_vec_norm).item()
 
-                # (B) 유저 선호도 (User Likes History Images <-> Post Image)
+                # (B) 유저 선호도
                 user_pref_sim = 0.0
                 if user_hist_img_norms:
-                    # 유저 최신 선호 이력 이미지들과의 유사도 중 최대값 사용
                     prefs = [torch.dot(uh_norm, p_img_vec_norm).item() for uh_norm in user_hist_img_norms]
                     user_pref_sim = max(prefs)
 
@@ -186,7 +191,7 @@ class UnifiedIntelligenceService:
                 final_score = 0.7 * visual_sim + 0.3 * user_pref_sim if user_hist_img_norms else visual_sim
                 scored_posts.append((str(p.post_id), final_score))
 
-            # 5. 정렬 및 페이징
+            # 6. 정렬 및 페이징
             scored_posts.sort(key=lambda x: x[1], reverse=True)
             page = scored_posts[skip: skip + limit]
             return [{"id": pid, "score": score} for pid, score in page]
@@ -219,14 +224,14 @@ class UnifiedIntelligenceService:
             await db.commit()
             
             # 2. Redis Vector Store 저장 (실시간 검색용)
-            # 오직 128차원 투영 퓨전 벡터만 Redis에 전송
+            # 128차원 투영 퓨전 벡터와 512차원 이미지 벡터 저장
             with torch.no_grad():
                 c = torch.from_numpy(caption_vec).to(self.device).unsqueeze(0)
                 t = torch.from_numpy(hashtag_vec).to(self.device).unsqueeze(0)
                 img = torch.from_numpy(image_vec).to(self.device).unsqueeze(0)
                 p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
             
-            vector_store.upsert_vector(str(post_id), p_vec_128, metadata)
+            vector_store.upsert_vector(str(post_id), p_vec_128, image_vector=image_vec, metadata=metadata)
             
         except Exception as e:
             logger.error(f"❌ Indexing failed for {post_id}: {e}")
@@ -246,7 +251,8 @@ class UnifiedIntelligenceService:
                     img = torch.from_numpy(np.frombuffer(p.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                     p_vec_128 = self.model.get_item_embedding(c, t, img).squeeze(0).cpu().numpy()
                     
-                vector_store.upsert_vector(str(p.post_id), p_vec_128, p.content_text)
+                p_img_512 = np.frombuffer(p.image_vector, dtype=np.float32).copy()
+                vector_store.upsert_vector(str(p.post_id), p_vec_128, image_vector=p_img_512, metadata=p.content_text)
             logger.info(f"✅ Backfilled {len(posts)} posts to Redis.")
         except Exception as e:
             logger.error(f"❌ Backfill failed: {e}")
