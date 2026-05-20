@@ -5,6 +5,27 @@ import torch.nn.functional as F
 UNIFIED_DIM = 512  # Native CLIP ViT-B/32 dimension — text & image natively aligned
 
 
+class ItemFusionGate(nn.Module):
+    """
+    Learns the optimal text/image blend ratio per item.
+    Input : concat(text_vec [B,512], image_vec [B,512]) → 1024-dim
+    Output: alpha [B,1]  →  fused = alpha*text + (1-alpha)*image
+    Trained jointly with UserTower via InfoNCE.
+    """
+    def __init__(self, dim: int = UNIFIED_DIM):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.Linear(dim * 2, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, text_vec: torch.Tensor, image_vec: torch.Tensor) -> torch.Tensor:
+        alpha = self.gate(torch.cat([text_vec, image_vec], dim=-1))  # [B, 1]
+        return alpha * text_vec + (1.0 - alpha) * image_vec
+
+
 class UserTower(nn.Module):
     """
     Aggregates a sequence of 512-dim item embeddings (user history) into a
@@ -43,26 +64,48 @@ class UnifiedDiscoveryModel(nn.Module):
     """
     CLIP-unified two-tower model.
 
-    Item Tower  : normalize( CLIP_text(mood_text) + CLIP_image(image) )  — no training needed
-    User Tower  : UserTower(Attention + GRU) over item history            — trained (Phase 2)
+    Item Tower  : ItemFusionGate( CLIP_text + hashtag(0.5w), CLIP_image ) — trained (gate)
+    User Tower  : UserTower(Attention + GRU) over item history            — trained
     Query Tower : normalize( CLIP_text(query) )                           — shares CLIP space
     """
     def __init__(self):
         super().__init__()
         self.user_tower = UserTower()
+        self.item_gate = ItemFusionGate()
 
     def get_item_embedding(
         self,
-        clip_text_vec: torch.Tensor,          # [B, 512]  CLIP text
-        clip_image_vec: torch.Tensor = None,  # [B, 512]  CLIP image  (optional)
+        clip_text_vec: torch.Tensor,           # [B, 512]  CLIP text (mood)
+        clip_image_vec: torch.Tensor = None,   # [B, 512]  CLIP image  (optional)
+        clip_hashtag_vec: torch.Tensor = None, # [B, 512]  CLIP hashtag (optional, 0.5 weight)
     ) -> torch.Tensor:
-        """Fuse text + image in CLIP's native space — no learned projection."""
-        if clip_image_vec is not None:
-            mask_t = (torch.norm(clip_text_vec,  dim=-1, keepdim=True) > 1e-6).float()
-            mask_i = (torch.norm(clip_image_vec, dim=-1, keepdim=True) > 1e-6).float()
-            fused = clip_text_vec * mask_t + clip_image_vec * mask_i
-            return F.normalize(fused, p=2, dim=-1)
-        return F.normalize(clip_text_vec, p=2, dim=-1)
+        """
+        Fuse text (+ hashtag) and image in CLIP's native 512-dim space.
+        - Hashtag: fixed 0.5-weight addition to text (Option B)
+        - Text/Image balance: learned gate (Option A)
+        """
+        # Option B: incorporate hashtag with fixed 0.5 weight
+        if clip_hashtag_vec is not None:
+            mask_h = (torch.norm(clip_hashtag_vec, dim=-1, keepdim=True) > 1e-6).float()
+            text_enriched = clip_text_vec + 0.5 * clip_hashtag_vec * mask_h
+            text_in = F.normalize(text_enriched, p=2, dim=-1)
+        else:
+            text_in = clip_text_vec
+
+        if clip_image_vec is None:
+            return F.normalize(text_in, p=2, dim=-1)
+
+        mask_t = (torch.norm(text_in,        dim=-1, keepdim=True) > 1e-6).float()
+        mask_i = (torch.norm(clip_image_vec, dim=-1, keepdim=True) > 1e-6).float()
+        t = text_in * mask_t
+        i = clip_image_vec * mask_i
+
+        # Option A: learned gate (text vs. image balance per item)
+        has_image = mask_i.squeeze(-1) > 0  # [B]
+        gated = self.item_gate(t, i)         # [B, 512]
+        # Fall back to text-only for items without an image
+        fused = torch.where(has_image.unsqueeze(-1), gated, t)
+        return F.normalize(fused, p=2, dim=-1)
 
     def get_query_embedding(self, clip_text_vec: torch.Tensor) -> torch.Tensor:
         """Query is already in CLIP text space — just normalize."""

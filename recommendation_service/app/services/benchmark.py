@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import random
 import zipfile
 import uuid
 import numpy as np
@@ -557,6 +558,42 @@ class BenchmarkService:
         except Exception as e:
             logger.error(f"❌ Cleanup failed: {e}")
             await db.rollback()
+
+    async def delete_benchmark_data(self, db) -> Dict[str, Any]:
+        """DevConsole에서 호출: 모든 벤치마크 데이터(DB + Redis + 좋아요) 완전 삭제."""
+        system_user_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
+        try:
+            from app.services.intelligence import intel_service
+            from app.ml.vector_store import vector_store
+
+            # Gather post IDs before deletion so we can clean Redis
+            res = await db.execute(text("SELECT id FROM upload.post WHERE user_id = :uid"), {"uid": system_user_id})
+            post_ids = [row[0] for row in res.all()]
+
+            for pid in post_ids:
+                try:
+                    await intel_service.remove_post(pid)
+                except Exception as e:
+                    logger.warning(f"Redis remove failed for {pid}: {e}")
+
+            # Delete in FK-safe order
+            await db.execute(text(
+                "DELETE FROM interaction.likes WHERE post_id IN (SELECT id FROM upload.post WHERE user_id = :uid)"
+            ), {"uid": system_user_id})
+            await db.execute(text(
+                "DELETE FROM search.post_vectors WHERE (content_text->>'is_animal_benchmark')::boolean = true"
+            ))
+            await db.execute(text("DELETE FROM upload.media WHERE user_id = :uid"), {"uid": system_user_id})
+            await db.execute(text("DELETE FROM upload.post WHERE user_id = :uid"), {"uid": system_user_id})
+            await db.execute(text("DELETE FROM upload.content WHERE user_id = :uid"), {"uid": system_user_id})
+            await db.commit()
+
+            logger.info(f"🗑️ Deleted {len(post_ids)} benchmark posts + likes from DB and Redis.")
+            return {"status": "success", "deleted_posts": len(post_ids)}
+        except Exception as e:
+            logger.error(f"❌ delete_benchmark_data failed: {e}", exc_info=True)
+            await db.rollback()
+            return {"status": "error", "message": str(e)}
 
 
 benchmark_service = BenchmarkService()

@@ -113,6 +113,7 @@ const DevConsole: React.FC = () => {
   // Tab 4: System Control State
   const [sysLogs, setSysLogs] = useState<string[]>([]);
   const [actionLoading, setActionLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   useEffect(() => {
     fetchMetrics();
@@ -372,6 +373,22 @@ const DevConsole: React.FC = () => {
       alert('인덱스 강제 동기화 중 에러가 발생했습니다.');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const deleteBenchmarkData = async () => {
+    if (!window.confirm('CIFAR-100 벤치마크 데이터 (포스트, 좋아요, 벡터 전부)를 삭제합니다. 계속할까요?')) return;
+    setDeleteLoading(true);
+    addLog("벤치마크 데이터 삭제 중...");
+    try {
+      const res = await client.delete('/discovery/benchmark/animal');
+      addLog(`삭제 완료: ${JSON.stringify(res.data)}`);
+      alert(`벤치마크 데이터 ${res.data.deleted_posts ?? '?'}건이 삭제되었습니다.`);
+    } catch (e: any) {
+      addLog("벤치마크 데이터 삭제 오류");
+      alert('삭제 중 오류: ' + (e.response?.data?.detail || e.message));
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -1178,6 +1195,30 @@ const DevConsole: React.FC = () => {
                     }}
                   >
                     Redis 벡터 동기화 실행
+                  </button>
+                </div>
+
+                <div style={{ border: '1px solid #fecaca', borderRadius: '20px', padding: '1.5rem', backgroundColor: '#fff5f5' }}>
+                  <h4 style={{ fontWeight: 800, color: '#dc2626', marginBottom: '0.5rem' }}>🗑️ CIFAR-100 벤치마크 데이터 삭제</h4>
+                  <p style={{ fontSize: '0.8125rem', color: '#64748b', lineHeight: '1.4', marginBottom: '1.25rem' }}>
+                    시스템 사용자(BenchmarkSystem)가 주입한 CIFAR-100 동물 포스트, 미디어, 좋아요, 벡터를 DB와 Redis에서 전부 삭제합니다.
+                  </p>
+                  <button
+                    onClick={deleteBenchmarkData}
+                    disabled={deleteLoading}
+                    style={{
+                      backgroundColor: '#dc2626',
+                      color: 'white',
+                      border: 'none',
+                      padding: '0.625rem 1.25rem',
+                      borderRadius: '10px',
+                      fontWeight: 800,
+                      cursor: deleteLoading ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                      opacity: deleteLoading ? 0.6 : 1
+                    }}
+                  >
+                    {deleteLoading ? '삭제 중...' : '벤치마크 데이터 삭제'}
                   </button>
                 </div>
               </div>

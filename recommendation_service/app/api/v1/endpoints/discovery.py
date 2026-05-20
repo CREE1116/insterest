@@ -154,6 +154,17 @@ async def seed_gemini_personas_interactions(
     from app.services.seed_gemini_interactions import seed_gemini_interactions_service
     return await seed_gemini_interactions_service(db, force=force)
 
+@router.delete("/benchmark/animal")
+async def delete_animal_benchmark_data(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    DevConsole용: CIFAR-100 벤치마크 데이터 (포스트, 미디어, 좋아요, 벡터) 전체 삭제.
+    """
+    from app.services.benchmark import benchmark_service
+    return await benchmark_service.delete_benchmark_data(db)
+
+
 @router.get("/debug/users")
 async def get_debug_active_users(
     db: AsyncSession = Depends(get_db)

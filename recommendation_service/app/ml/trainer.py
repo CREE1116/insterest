@@ -24,7 +24,7 @@ class UnifiedDiscoveryTrainer:
         self.model.to(self.device)
 
         self.optimizer = optim.Adam(
-            list(model.user_tower.parameters()),
+            list(model.user_tower.parameters()) + list(model.item_gate.parameters()),
             lr=learning_rate, weight_decay=1e-5
         )
 

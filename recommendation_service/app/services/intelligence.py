@@ -82,7 +82,10 @@ class UnifiedIntelligenceService:
                                 else:
                                     c = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                 img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                                hist_embs.append(self.model.get_item_embedding(c, img).squeeze(0))
+                                h_bytes = v.hashtag_vector
+                                h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) \
+                                    if h_bytes and len(h_bytes) == 512 * 4 else None
+                                hist_embs.append(self.model.get_item_embedding(c, img, h).squeeze(0))
 
                         if hist_embs:
                             seq_len = 10
@@ -197,7 +200,10 @@ class UnifiedIntelligenceService:
                                 else:
                                     c = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                 img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                                hist_embs.append(self.model.get_item_embedding(c, img).squeeze(0))
+                                h_bytes = v.hashtag_vector
+                                h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) \
+                                    if h_bytes and len(h_bytes) == 512 * 4 else None
+                                hist_embs.append(self.model.get_item_embedding(c, img, h).squeeze(0))
 
                         if hist_embs:
                             seq_len = 10
@@ -272,11 +278,12 @@ class UnifiedIntelligenceService:
             await db.commit()
 
             # 2. Redis Vector Store 저장 (실시간 검색용)
-            # 512-dim CLIP 통합 아이템 벡터: normalize(CLIP_text + CLIP_image)
+            # ItemFusionGate(CLIP_text + hashtag, CLIP_image) → 512-dim
             with torch.no_grad():
                 c = torch.from_numpy(caption_vec).to(self.device).unsqueeze(0)
                 img = torch.from_numpy(image_vec).to(self.device).unsqueeze(0)
-                p_vec = self.model.get_item_embedding(c, img).squeeze(0).cpu().numpy()
+                h = torch.from_numpy(hashtag_vec).to(self.device).unsqueeze(0) if hashtag_vec is not None else None
+                p_vec = self.model.get_item_embedding(c, img, h).squeeze(0).cpu().numpy()
 
             # 3. SBERT 768-dim text_vector 계산 및 Redis 저장
             caption = metadata.get("caption", "")
@@ -334,7 +341,10 @@ class UnifiedIntelligenceService:
                             c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
 
                         img_t = torch.from_numpy(np.frombuffer(img_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        p_vec = self.model.get_item_embedding(c_t, img_t).squeeze(0).cpu().numpy()
+                        h_bytes = p.hashtag_vector
+                        h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) \
+                              if h_bytes and len(h_bytes) == 512 * 4 else None
+                        p_vec = self.model.get_item_embedding(c_t, img_t, h_t).squeeze(0).cpu().numpy()
 
                     # SBERT 768-dim text_vector 계산
                     meta = p.content_text or {}
@@ -401,21 +411,36 @@ class UnifiedIntelligenceService:
 
             logger.info("🟢 [UserTower] InfoNCE training on CLIP item embeddings...")
 
-            # 아이템 임베딩 사전 계산 (CLIP 고정, 학습 불필요)
-            item_emb_lookup: Dict[Any, torch.Tensor] = {}
+            # 원본 CLIP 텐서 저장 (target 재계산 + lookup 갱신에 사용)
+            raw_clip: Dict[Any, tuple] = {}
             with torch.no_grad():
                 for v in all_vectors:
                     cap_bytes = v.caption_vector
-                    # Handle legacy SBERT 768-dim vectors
                     if len(cap_bytes) == 768 * 4:
                         meta = v.content_text or {}
                         mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
-                        c_t = nlp_embedder.embed_text_clip(mood).unsqueeze(0).to(self.device) if mood else \
-                              torch.zeros(1, 512, device=self.device)
+                        c_t = nlp_embedder.embed_text_clip(mood).unsqueeze(0) if mood else \
+                              torch.zeros(1, 512)
                     else:
-                        c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                    img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                    item_emb_lookup[v.post_id] = self.model.get_item_embedding(c_t, img_t).squeeze(0).detach()
+                        c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).unsqueeze(0)
+                    img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).unsqueeze(0)
+                    h_bytes = v.hashtag_vector
+                    h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0) \
+                          if h_bytes and len(h_bytes) == 512 * 4 else None
+                    raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None)
+
+            def _build_lookup() -> Dict[Any, torch.Tensor]:
+                """현재 gate 가중치로 아이템 임베딩 사전 계산 (history 빌딩·hard negative용)."""
+                lookup = {}
+                with torch.no_grad():
+                    for pid, (c, img, h) in raw_clip.items():
+                        c_d = c.to(self.device)
+                        img_d = img.to(self.device)
+                        h_d = h.to(self.device) if h is not None else None
+                        lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0).detach()
+                return lookup
+
+            item_emb_lookup: Dict[Any, torch.Tensor] = _build_lookup()
 
             train_data = []
             for uid, pids in user_sequences.items():
@@ -426,32 +451,37 @@ class UnifiedIntelligenceService:
                         train_data.append((hist, target))
 
             EPOCHS = 50
+            self.model.train()
             for epoch in range(EPOCHS):
+                # 10 에폭마다 gate 가중치 변화를 lookup에 반영
+                if epoch > 0 and epoch % 10 == 0:
+                    item_emb_lookup = _build_lookup()
+
                 random.shuffle(train_data)
                 total_loss = 0.0
                 for i in range(0, len(train_data), BATCH):
                     batch = train_data[i:i+BATCH]
                     hist_embs, target_vecs, query_caps = [], [], []
                     for hist, target in batch:
+                        # History: precomputed lookup (detach) → UserTower gradient path
                         h_embs = [item_emb_lookup[h_id] for h_id in hist]
                         while len(h_embs) < 10:
                             h_embs.insert(0, torch.zeros(512, device=self.device))
                         hist_embs.append(torch.stack(h_embs))
-                        target_vecs.append(item_emb_lookup[target])
-                        # query = CLIP text of target item
-                        pv_t = p_vectors[target]
-                        cap_bytes = pv_t.caption_vector
-                        if len(cap_bytes) == 768 * 4:
-                            meta = pv_t.content_text or {}
-                            mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
-                            with torch.no_grad():
-                                qv = nlp_embedder.embed_text_clip(mood).to(self.device) if mood else \
-                                     torch.zeros(512, device=self.device)
-                        else:
-                            qv = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device)
+
+                        # Target: recomputed WITH grad → ItemFusionGate gradient path
+                        c_raw, img_raw, h_raw = raw_clip[target]
+                        c_d = c_raw.to(self.device)
+                        img_d = img_raw.to(self.device)
+                        h_d = h_raw.to(self.device) if h_raw is not None else None
+                        target_vec = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0)
+                        target_vecs.append(target_vec)
+
+                        # Query = CLIP text of target item
+                        qv = c_d.squeeze(0)  # already 512-dim CLIP
                         query_caps.append(qv)
 
-                    # Hard negatives: 전체 아이템 풀에서 랜덤 샘플링 (배치 외부 negatives)
+                    # Hard negatives from lookup (detach — too many to track grads)
                     pool_keys = list(item_emb_lookup.keys())
                     target_set = {target for _, target in batch}
                     neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
@@ -469,9 +499,13 @@ class UnifiedIntelligenceService:
                 if (epoch + 1) % 10 == 0:
                     logger.info(f"  Epoch {epoch+1}/{EPOCHS} loss={total_loss:.4f}")
 
-            logger.info("✅ [UserTower] Training complete.")
+            logger.info("✅ [UserTower+ItemGate] Training complete.")
             self.trainer.save_model(settings.MODEL_SAVE_PATH)
             logger.info(f"✅ Total Training Pipeline: {time.time()-total_start:.2f}s")
+
+            # Gate 가중치가 변경됐으므로 Redis 전체 재인덱싱
+            logger.info("🔄 Re-indexing all items with updated ItemFusionGate...")
+            asyncio.create_task(self.backfill_all_posts(db))
 
         except Exception as e:
             logger.error(f"❌ Training failure: {e}", exc_info=True)
