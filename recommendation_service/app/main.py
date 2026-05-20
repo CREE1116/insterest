@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from app.api.v1.api import api_router
 from app.core.config import settings
@@ -30,6 +31,11 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={"detail": str(exc), "message": "Internal Server Error"},
     )
 
+
+# Serve benchmark CIFAR images: /benchmark/cifar100/{class}_{idx}.jpg
+_CIFAR_IMG_DIR = "/data/cifar_images"
+os.makedirs(_CIFAR_IMG_DIR, exist_ok=True)
+app.mount("/benchmark/cifar100", StaticFiles(directory=_CIFAR_IMG_DIR), name="benchmark_cifar")
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,6 +100,9 @@ async def startup_event():
     from app.services.kafka_consumer import consume_post_created
     asyncio.create_task(consume_post_created())
     logger.info("📡 Kafka Consumer Task Started")
+
+    # 5. Benchmark image directory — create if missing
+    os.makedirs("/data/cifar_images", exist_ok=True)
 
 
 @app.get("/health")

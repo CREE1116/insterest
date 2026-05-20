@@ -41,6 +41,8 @@ spec:
           value: "auth_db"
         - name: SECRET_KEY
           value: "k8s-local-secret-key"
+        - name: ACCESS_TOKEN_EXPIRE_MINUTES
+          value: "10080"
         - name: GOOGLE_CLIENT_ID
           valueFrom:
             secretKeyRef:

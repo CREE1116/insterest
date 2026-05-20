@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import zipfile
 import uuid
 import numpy as np
@@ -341,19 +342,33 @@ class BenchmarkService:
         class_post_ids: Dict[str, Dict[int, uuid.UUID]] = {k: dict(v) for k, v in existing.items()}
         total_new = 0
 
+        # Directory where CIFAR images are saved for static serving
+        img_dir = "/data/cifar_images"
+        os.makedirs(img_dir, exist_ok=True)
+
         for class_name, imgs in per_class.items():
             if class_name not in class_post_ids:
                 class_post_ids[class_name] = {}
             for idx, pil_img in enumerate(imgs):
+                img_bytes = self._cifar_img_to_bytes(pil_img)
+
+                # Save image file for static serving (idempotent)
+                img_file = os.path.join(img_dir, f"{class_name}_{idx}.jpg")
+                if not os.path.exists(img_file):
+                    try:
+                        with open(img_file, "wb") as f:
+                            f.write(img_bytes)
+                    except Exception as e:
+                        logger.warning(f"Failed to save benchmark image {img_file}: {e}")
+
                 if idx in class_post_ids[class_name]:
-                    continue  # already exists — reuse
+                    continue  # DB/Redis already exists — reuse
 
                 post_id = uuid.uuid4()
                 content_id = uuid.uuid4()
                 media_id = uuid.uuid4()
                 caption = f"{class_name}, sample {idx + 1}"
                 hashtags = [class_name]
-                img_bytes = self._cifar_img_to_bytes(pil_img)
 
                 try:
                     await db.execute(text(

@@ -133,6 +133,15 @@ spec:
             port:
               number: 8002
 
+      # --- Benchmark Images (recommendation-service static) ---
+      - path: /benchmark
+        pathType: Prefix
+        backend:
+          service:
+            name: recommendation-service
+            port:
+              number: 8008
+
       # --- Frontend ---
       - path: /
         pathType: Prefix
