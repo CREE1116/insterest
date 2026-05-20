@@ -72,18 +72,13 @@ class UnifiedIntelligenceService:
                                 hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
 
                         if hist_embs:
-                            # 시간 감쇄 가중 풀링
-                            # history_ids는 ASC(오래된 순), 마지막 원소가 최신 좋아요
-                            # weight[i] = 0.5^(N-1-i) → 최신일수록 2배씩 높은 가중치
-                            n = len(hist_embs)
-                            weights = torch.tensor(
-                                [0.5 ** (n - 1 - i) for i in range(n)],
-                                dtype=torch.float32, device=self.device
-                            )
-                            weights = weights / weights.sum()
-                            stacked = torch.stack(hist_embs)           # [N, 128]
-                            user_vec_t = (stacked * weights.unsqueeze(1)).sum(dim=0)
-                            user_vec = torch.nn.functional.normalize(user_vec_t, p=2, dim=-1).cpu().numpy()
+                            # UserTower (Attention + GRU) 통과 — 훈련과 동일한 경로
+                            # history_ids는 ASC(오래된 순) → 최신이 뒤쪽 슬롯에 오도록 배치
+                            seq_len = 10
+                            padded = torch.zeros(1, seq_len, 128, device=self.device)
+                            for i, emb in enumerate(hist_embs[-seq_len:]):
+                                padded[0, i] = emb
+                            user_vec = self.model.get_user_embedding(padded).squeeze(0).cpu().numpy()
 
             # 3. 검색 vs 추천 분리
             if query_vec_128 is not None and user_vec is None:
