@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, BackgroundTasks, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db, AsyncSessionLocal
 from app.services.intelligence import intel_service
@@ -6,6 +6,33 @@ from typing import List, Optional
 import uuid
 
 router = APIRouter()
+
+@router.post("/image", response_model=List[uuid.UUID])
+async def discovery_image_search(
+    file: UploadFile = File(...),
+    user_id: Optional[str] = Query(None),
+    skip: int = Query(0),
+    limit: int = Query(50),
+    db: AsyncSession = Depends(get_db)
+):
+    """Image Search: 이미지를 CLIP으로 벡터화하고 투영하여 유사한 아이템을 검색합니다."""
+    # user_id 파싱 처리 (유효하지 않은 UUID는 None 처리)
+    processed_user_id = None
+    if user_id and user_id != "0" and user_id != "undefined":
+        try:
+            processed_user_id = uuid.UUID(user_id)
+        except (ValueError, AttributeError):
+            processed_user_id = None
+
+    image_bytes = await file.read()
+    results = await intel_service.discover_by_image(
+        db,
+        image_bytes=image_bytes,
+        user_id=processed_user_id,
+        skip=skip,
+        limit=limit
+    )
+    return [r["id"] for r in results]
 
 @router.get("/recommend", response_model=List[uuid.UUID])
 async def discovery_feed(

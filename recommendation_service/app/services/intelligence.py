@@ -118,6 +118,84 @@ class UnifiedIntelligenceService:
             logger.error(f"❌ Error in discovery: {e}", exc_info=True)
             return []
 
+    async def discover_by_image(self, db: AsyncSession, image_bytes: bytes, user_id: uuid.UUID = None,
+                                limit: int = 20, skip: int = 0, use_personalization: bool = True,
+                                exclude_history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
+        """
+        이미지 검색 + 개인화 추천:
+        - 이미지를 CLIP 모델을 통해 512차원 벡터로 변환
+        - 128차원 투영 레이어(image_proj)를 통과시켜 L2 정규화 수행
+        - 유저 취향(user_vec)이 있다면 퓨전하여 Redis HNSW 검색 수행
+        """
+        import torch.nn.functional as F
+        from app.ml.vector_store import vector_store
+        try:
+            # 1. 이미지 벡터 계산 (CLIP 512차원)
+            raw_img_vec = nlp_embedder.embed_image(image_bytes).to(self.device).unsqueeze(0)
+            
+            with torch.no_grad():
+                # 512d -> 128d 투영 및 normalization
+                img_query_vec_128 = F.normalize(self.model.image_proj(raw_img_vec), p=2, dim=-1).squeeze(0).cpu().numpy()
+
+            # 2. 유저 히스토리 → 유저 벡터 계산
+            user_vec = None
+            if user_id and use_personalization:
+                stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at ASC LIMIT 10")
+                res = await db.execute(stmt, {"uid": user_id})
+                history_ids = [row[0] for row in res.all()]
+
+                if history_ids:
+                    res = await db.execute(select(PostVector).where(PostVector.post_id.in_(history_ids)))
+                    p_vectors = {v.post_id: v for v in res.scalars().all()}
+
+                    hist_embs = []
+                    with torch.no_grad():
+                        for h_id in history_ids:
+                            if h_id in p_vectors:
+                                v = p_vectors[h_id]
+                                c = torch.from_numpy(np.frombuffer(v.caption_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                t = torch.from_numpy(np.frombuffer(v.hashtag_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                hist_embs.append(self.model.get_item_embedding(c, t, img).squeeze(0))
+
+                        if hist_embs:
+                            n = len(hist_embs)
+                            weights = torch.tensor(
+                                [0.5 ** (n - 1 - i) for i in range(n)],
+                                dtype=torch.float32, device=self.device
+                            )
+                            weights = weights / weights.sum()
+                            stacked = torch.stack(hist_embs)
+                            user_vec_t = (stacked * weights.unsqueeze(1)).sum(dim=0)
+                            user_vec = torch.nn.functional.normalize(user_vec_t, p=2, dim=-1).cpu().numpy()
+
+            # 3. 이미지 쿼리 vs 개인화 퓨전
+            if img_query_vec_128 is not None and user_vec is None:
+                search_vec = img_query_vec_128
+            elif img_query_vec_128 is not None and user_vec is not None:
+                with torch.no_grad():
+                    q_t = torch.from_numpy(img_query_vec_128).to(self.device)
+                    u_t = torch.from_numpy(user_vec).to(self.device)
+                    search_vec = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0).cpu().numpy()
+            else:
+                search_vec = None
+
+            if search_vec is not None:
+                result_ids = vector_store.search_knn(search_vec, k=limit + len(exclude_history_ids or []) + skip)
+                exclude_set = set(str(i) for i in (exclude_history_ids or []))
+                filtered = [str(pid) for pid in result_ids if str(pid) not in exclude_set]
+                page = filtered[skip: skip + limit]
+                return [{"id": pid, "score": 1.0} for pid in page]
+
+            # Fallback: 최신순
+            stmt = text("SELECT id FROM upload.post WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT :l OFFSET :s")
+            res = await db.execute(stmt, {"l": limit, "s": skip})
+            return [{"id": str(row[0]), "score": 0.0} for row in res.all()]
+
+        except Exception as e:
+            logger.error(f"❌ Error in discover_by_image: {e}", exc_info=True)
+            return []
+
     async def index_post(self, db: AsyncSession, post_id: uuid.UUID, 
                          caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray,
                          metadata: Dict[str, Any]):

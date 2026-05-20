@@ -179,6 +179,46 @@ export const useSearch = (query: string) => {
   });
 };
 
+export const useImageSearch = (imageFile: File | null, userId?: string) => {
+  return useQuery({
+    queryKey: ['imageSearch', imageFile?.name + '_' + imageFile?.size, userId],
+    queryFn: async () => {
+      if (!imageFile) return [];
+      
+      const formData = new FormData();
+      formData.append('file', imageFile);
+      
+      // 1. Post to image search endpoint in recommendation service
+      const res = await client.post('/discovery/image', formData, {
+        params: { user_id: userId || '0' },
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      const postIds = Array.isArray(res.data) ? res.data : [];
+      
+      if (postIds.length === 0) return [];
+      
+      // 2. Fetch full post details from upload service
+      const detailRes = await client.post('/upload/content/batch', { post_ids: postIds });
+      const results = Array.isArray(detailRes.data) ? detailRes.data : [];
+      
+      // 3. Process authors
+      const userIds = [...new Set(results.map((p: any) => p.user_id))].filter(Boolean);
+      if (userIds.length > 0) {
+        const params = new URLSearchParams();
+        userIds.forEach(id => params.append('user_ids', String(id)));
+        const usersRes = await client.get(`/users/batch?${params.toString()}`);
+        const userMap: Record<string, any> = {};
+        usersRes.data.forEach((u: any) => { userMap[u.user_id] = u; });
+        return results.map((p: any) => ({ ...p, author: userMap[p.user_id] || { nickname: '유저' } }));
+      }
+      return results;
+    },
+    enabled: !!imageFile,
+  });
+};
+
 export const useSavedIds = (isLoggedIn: boolean) => {
   return useQuery({
     queryKey: ['savedIds'],

@@ -8,7 +8,7 @@ import PostModal from './components/PostModal';
 import CreateModal from './components/CreateModal';
 import SettingsModal from './components/SettingsModal';
 import client from './api/client';
-import { useFeed, useSearch, useSavedIds, useCollections } from './hooks/usePostQueries';
+import { useFeed, useSearch, useSavedIds, useCollections, useImageSearch } from './hooks/usePostQueries';
 
 const SkeletonCard: React.FC = () => (
   <div className="masonry-item" style={{ breakInside: 'avoid', marginBottom: '1.5rem', borderRadius: '24px', overflow: 'hidden', backgroundColor: '#f1f5f9', height: `${Math.random() * 200 + 200}px`, position: 'relative' }}>
@@ -30,6 +30,23 @@ const AppContent: React.FC = () => {
   const [newCollectionName, setNewCollectionName] = useState('');
   const [selectedCollection, setSelectedCollection] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchImage, setSearchImage] = useState<File | null>(null);
+  const searchFileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleSearchImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSearchQuery('');
+      setSearchImage(file);
+    }
+  };
+
+  useEffect(() => {
+    if (viewMode !== 'explore') {
+      setSearchQuery('');
+      setSearchImage(null);
+    }
+  }, [viewMode]);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -81,6 +98,7 @@ const AppContent: React.FC = () => {
 
   const feedPosts = infiniteFeedData?.pages.flatMap(page => page.posts) || [];
   const { data: searchResults, isFetching: searchLoading } = useSearch(searchQuery);
+  const { data: imageSearchResults, isFetching: imageSearchLoading } = useImageSearch(searchImage, user?.id || user?.user_id);
   const { data: savedPostIds = [] } = useSavedIds(isLoggedIn);
   const { data: collections = [] } = useCollections(isLoggedIn && (viewMode === 'saved' || (viewMode === 'profile' && profileTab === 'folders')));
 
@@ -137,8 +155,12 @@ const AppContent: React.FC = () => {
     }
   }, [viewMode, isLoggedIn]);
 
-  const displayPosts = (viewMode === 'explore' && searchQuery.trim()) ? (searchResults || []) : feedPosts;
-  const isLoading = (viewMode === 'explore' && searchQuery.trim()) ? searchLoading : (feedLoading && feedPosts.length === 0);
+  const displayPosts = (viewMode === 'explore') 
+    ? (searchImage ? (imageSearchResults || []) : (searchQuery.trim() ? (searchResults || []) : feedPosts)) 
+    : feedPosts;
+  const isLoading = (viewMode === 'explore')
+    ? (searchImage ? imageSearchLoading : (searchQuery.trim() ? searchLoading : (feedLoading && feedPosts.length === 0)))
+    : (feedLoading && feedPosts.length === 0);
 
   // Masonry Column Distribution Logic
   const [columnCount, setColumnCount] = useState(2);
@@ -242,13 +264,50 @@ const AppContent: React.FC = () => {
         {viewMode === 'explore' && (
           <div style={{ padding: '2rem 1rem', display: 'flex', justifyContent: 'center' }}>
             <div style={{ position: 'relative', width: '100%', maxWidth: '600px' }}>
-              <Search size={20} style={{ position: 'absolute', left: '1.5rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              {searchImage ? (
+                <div style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'white', padding: '0.35rem 0.75rem', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 2px 6px rgba(0,0,0,0.05)', zIndex: 10 }}>
+                  <img src={URL.createObjectURL(searchImage)} style={{ width: '20px', height: '20px', borderRadius: '6px', objectFit: 'cover' }} />
+                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)' }}>이미지 검색</span>
+                  <button 
+                    onClick={() => setSearchImage(null)} 
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 0, color: 'var(--text-muted)' }}
+                  >
+                    <Plus size={14} style={{ transform: 'rotate(45deg)' }} />
+                  </button>
+                </div>
+              ) : (
+                <Search size={20} style={{ position: 'absolute', left: '1.5rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              )}
               <input 
                 autoFocus 
-                placeholder="검색어를 입력해보세요" 
-                value={searchQuery} 
+                placeholder={searchImage ? "" : "검색어를 입력해보세요"} 
+                disabled={!!searchImage}
+                value={searchImage ? "이미지 기준으로 추천 검색된 결과입니다." : searchQuery} 
                 onChange={e => setSearchQuery(e.target.value)} 
-                style={{ width: '100%', padding: '1rem 1.5rem 1rem 3.75rem', borderRadius: '24px', backgroundColor: '#f1f5f9', border: 'none', fontSize: '1.1rem', fontWeight: 600, boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} 
+                style={{ 
+                  width: '100%', 
+                  padding: `1rem 3.5rem 1rem ${searchImage ? '8.5rem' : '3.75rem'}`, 
+                  borderRadius: '24px', 
+                  backgroundColor: '#f1f5f9', 
+                  border: 'none', 
+                  fontSize: '1.1rem', 
+                  fontWeight: 600, 
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+                  color: searchImage ? 'var(--text-muted)' : 'inherit'
+                }} 
+              />
+              <button 
+                onClick={() => searchFileInputRef.current?.click()}
+                style={{ position: 'absolute', right: '1.5rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                <Camera size={20} />
+              </button>
+              <input 
+                type="file" 
+                ref={searchFileInputRef} 
+                onChange={handleSearchImageChange} 
+                style={{ display: 'none' }} 
+                accept="image/*" 
               />
             </div>
           </div>
@@ -416,6 +475,7 @@ const AppContent: React.FC = () => {
             onSuccess={() => {
               qc.invalidateQueries({ queryKey: ['feed'] });
               qc.invalidateQueries({ queryKey: ['search'] });
+              qc.invalidateQueries({ queryKey: ['imageSearch'] });
               qc.invalidateQueries({ queryKey: ['collections'] });
             }} 
           />

@@ -6,10 +6,11 @@ echo "🚀 Starting GitOps Bootstrap with ArgoCD..."
 # 1. 아르고CD 설치
 echo "📦 Installing ArgoCD..."
 kubectl create namespace argocd || true
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply --server-side -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 # 2. Ingress Controller 설치 (로컬 접속용)
 echo "🌐 Installing Ingress Controller (Nginx)..."
+kubectl delete job -n ingress-nginx ingress-nginx-admission-create ingress-nginx-admission-patch || true
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
 
 # 2. 아르고CD 서버가 뜰 때까지 대기

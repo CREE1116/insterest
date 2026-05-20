@@ -43,7 +43,7 @@ async def get_training_status():
         "engine": "UnifiedDiscoveryEngine"
     }
 
-@router.get("/benchmark")
+@router.get("")
 async def run_benchmark(db: AsyncSession = Depends(get_db)):
     """
     정량적 벤치마크(Recall, NDCG)를 실행하고 결과를 반환합니다.
