@@ -9,6 +9,7 @@ dependencies = [
     "sqlalchemy[asyncio]",
     "asyncpg",
     "torch",
+    "torchvision",
     "sentence-transformers",
     "numpy",
     "redis",
@@ -32,3 +33,4 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }

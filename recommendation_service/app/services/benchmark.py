@@ -277,368 +277,199 @@ class BenchmarkService:
             logger.error(f"❌ Custom benchmark error: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
 
-    async def inject_animal_dataset(self, db) -> int:
-        """
-        동물 이미지 데이터셋을 DB(upload 및 search 스키마)와 Redis에 주입합니다.
-        """
-        check_stmt = text(
-            "SELECT COUNT(*) FROM search.post_vectors "
-            "WHERE (content_text->>'is_animal_benchmark')::boolean = true"
-        )
-        res = await db.execute(check_stmt)
-        count = res.scalar() or 0
-        if count >= 10:
-            logger.info("🐾 Animal dataset is already fully injected. Skipping injection.")
-            return 0
+    # ── CIFAR-10 Benchmark ────────────────────────────────────────────────────
 
+    CIFAR100_SAMPLES_PER_CLASS = 2  # 100 classes × 2 = 200 total samples
+
+    def _cifar_img_to_bytes(self, pil_img) -> bytes:
+        img = pil_img.resize((224, 224), Image.BICUBIC)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        return buf.getvalue()
+
+    def _load_cifar100_samples(self) -> Dict[str, list]:
+        """CIFAR-100 다운로드 후 클래스별 PIL 이미지 N장 반환."""
+        import torchvision.datasets as tvd
+        dataset = tvd.CIFAR100(root="/tmp/cifar100", train=True, download=True)
+        class_names = dataset.classes  # 100 fine-grained classes
+        per_class: Dict[str, list] = {c: [] for c in class_names}
+        for img, label in dataset:
+            name = class_names[label]
+            if len(per_class[name]) < self.CIFAR100_SAMPLES_PER_CLASS:
+                per_class[name].append(img)
+            if all(len(v) >= self.CIFAR100_SAMPLES_PER_CLASS for v in per_class.values()):
+                break
+        return per_class
+
+    async def inject_cifar_dataset(self, db) -> Dict[str, Dict[int, uuid.UUID]]:
+        """CIFAR-100 이미지를 DB와 Redis에 주입하고 {class: {sample_idx: post_id}} 반환."""
         system_user_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
-        
         try:
             check_user = await db.execute(text("SELECT id FROM auth.users WHERE id = :uid"), {"uid": system_user_id})
             if not check_user.first():
                 await db.execute(text(
                     "INSERT INTO auth.users (id, email, password_hash, nickname, role, is_active, created_at) "
-                    "VALUES (:uid, 'system_benchmark@insterest.ai', 'N/A', 'AnimalBenchmarkSystem', 'user', true, NOW())"
+                    "VALUES (:uid, 'system_benchmark@insterest.ai', 'N/A', 'BenchmarkSystem', 'user', true, NOW())"
                 ), {"uid": system_user_id})
                 await db.commit()
-        except Exception as ue:
-            logger.warning(f"Failed to check/create system user: {ue}")
-
-        injected = 0
-        for item in ANIMAL_DATASET:
-            post_id = uuid.uuid4()
-            content_id = uuid.uuid4()
-            media_id = uuid.uuid4()
-            
-            try:
-                await db.execute(text(
-                    "INSERT INTO upload.content (id, user_id, content_type, metadata, created_at, is_deleted, is_ai) "
-                    "VALUES (:id, :user_id, 'PHOTO', :metadata, NOW(), false, false)"
-                ), {
-                    "id": content_id,
-                    "user_id": system_user_id,
-                    "metadata": json.dumps({"is_animal_benchmark": True, "animal_name": item["name"]})
-                })
-                
-                await db.execute(text(
-                    "INSERT INTO upload.post (id, content_id, user_id, caption, like_count, view_count, created_at, is_deleted) "
-                    "VALUES (:id, :content_id, :user_id, :caption, 0, 0, NOW(), false)"
-                ), {
-                    "id": post_id,
-                    "content_id": content_id,
-                    "user_id": system_user_id,
-                    "caption": item["caption"]
-                })
-                
-                await db.execute(text(
-                    "INSERT INTO upload.media (id, user_id, content_id, type, url, created_at, metadata_info) "
-                    "VALUES (:id, :user_id, :content_id, 'IMAGE', :url, NOW(), '{}'::jsonb)"
-                ), {
-                    "id": media_id,
-                    "user_id": system_user_id,
-                    "content_id": content_id,
-                    "url": item["url"]
-                })
-                
-                await db.commit()
-            except Exception as dbe:
-                logger.error(f"❌ Failed to insert upload DB records for animal {item['name']}: {dbe}")
-                await db.rollback()
-                continue
-
-            img_bytes = None
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    img_res = await client.get(item["url"])
-                    if img_res.status_code == 200:
-                        img_bytes = img_res.content
-            except Exception as ne:
-                logger.warning(f"Internet download failed for {item['name']}, using synthetic fallback: {ne}")
-
-            if not img_bytes:
-                try:
-                    img = Image.new("RGB", (224, 224), color="lightblue")
-                    draw = ImageDraw.Draw(img)
-                    draw.rectangle([20, 20, 204, 204], outline="darkblue", width=4)
-                    draw.text((40, 100), item["name"].upper(), fill="darkblue")
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG")
-                    img_bytes = buf.getvalue()
-                except Exception as pe:
-                    logger.error(f"Pillow drawing failed: {pe}")
-                    img_bytes = b""
-
-            caption_emb = nlp_embedder.embed_text(item["caption"]).to(self.device)
-            caption_vec = F.normalize(caption_emb, p=2, dim=-1).cpu().numpy()
-            
-            if item["hashtags"]:
-                h_embs = nlp_embedder.embed_batch(item["hashtags"])
-                h_emb = torch.mean(h_embs, dim=0).to(self.device)
-                hashtag_vec = F.normalize(h_emb, p=2, dim=-1).cpu().numpy()
-            else:
-                hashtag_vec = np.zeros(768, dtype=np.float32)
-
-            if img_bytes:
-                img_emb = nlp_embedder.embed_image(img_bytes).to(self.device)
-                image_vec = F.normalize(img_emb, p=2, dim=-1).cpu().numpy()
-            else:
-                image_vec = np.zeros(512, dtype=np.float32)
-
-            from app.services.intelligence import intel_service
-            try:
-                await intel_service.index_post(
-                    db=db,
-                    post_id=post_id,
-                    caption_vec=caption_vec,
-                    hashtag_vec=hashtag_vec,
-                    image_vec=image_vec,
-                    metadata={"caption": item["caption"], "is_animal_benchmark": True, "animal_name": item["name"]}
-                )
-                injected += 1
-            except Exception as ie:
-                logger.error(f"❌ Indexing failed for animal {item['name']}: {ie}")
-
-        return injected
-
-    async def run_animal_db_benchmark(self, db) -> Dict[str, Any]:
-        """
-        동물분류 데이터셋을 DB에 주입하고 다대다 교차 매칭 벤치마크를 수행합니다.
-        """
-        injected_count = await self.inject_animal_dataset(db)
-        logger.info(f"🐾 Animal dataset verification done. Injected {injected_count} new posts.")
+        except Exception as e:
+            logger.warning(f"System user upsert: {e}")
 
         from app.services.intelligence import intel_service
-        stmt = text(
-            "SELECT post_id, content_text FROM search.post_vectors "
-            "WHERE (content_text->>'is_animal_benchmark')::boolean = true"
-        )
-        res = await db.execute(stmt)
-        rows = res.all()
-        
-        db_animals = {}
-        for r in rows:
-            post_id = r[0]
-            meta = r[1]
-            animal_name = meta.get("animal_name") if isinstance(meta, dict) else None
-            if animal_name:
-                db_animals[animal_name] = post_id
+        logger.info("📥 Downloading CIFAR-100 dataset...")
+        per_class = self._load_cifar100_samples()
+        total = sum(len(v) for v in per_class.values())
+        logger.info(f"✅ CIFAR-100 loaded. Injecting {total} samples ({len(per_class)} classes × {self.CIFAR100_SAMPLES_PER_CLASS})...")
 
-        if len(db_animals) < 2:
-            return {
-                "status": "error",
-                "message": f"Insufficient benchmark samples in DB. Found {len(db_animals)}, required at least 2."
-            }
+        class_post_ids: Dict[str, Dict[int, uuid.UUID]] = {}
+        for class_name, imgs in per_class.items():
+            class_post_ids[class_name] = {}
+            for idx, pil_img in enumerate(imgs):
+                post_id = uuid.uuid4()
+                content_id = uuid.uuid4()
+                media_id = uuid.uuid4()
+                # Caption: label + sample number  /  Hashtag: label
+                caption = f"{class_name}, sample {idx + 1}"
+                hashtags = [class_name]
+                img_bytes = self._cifar_img_to_bytes(pil_img)
 
+                try:
+                    await db.execute(text(
+                        "INSERT INTO upload.content (id, user_id, content_type, metadata, created_at, is_deleted, is_ai) "
+                        "VALUES (:id, :uid, 'PHOTO', :meta, NOW(), false, false)"
+                    ), {"id": content_id, "uid": system_user_id,
+                        "meta": json.dumps({"is_animal_benchmark": True, "animal_name": class_name, "sample_idx": idx})})
+                    await db.execute(text(
+                        "INSERT INTO upload.post (id, content_id, user_id, caption, like_count, view_count, created_at, is_deleted) "
+                        "VALUES (:id, :cid, :uid, :cap, 0, 0, NOW(), false)"
+                    ), {"id": post_id, "cid": content_id, "uid": system_user_id, "cap": caption})
+                    await db.execute(text(
+                        "INSERT INTO upload.media (id, user_id, content_id, type, url, created_at, metadata_info) "
+                        "VALUES (:id, :uid, :cid, 'IMAGE', :url, NOW(), '{}'::jsonb)"
+                    ), {"id": media_id, "uid": system_user_id, "cid": content_id,
+                        "url": f"/benchmark/cifar100/{class_name}_{idx}.jpg"})
+                    await db.commit()
+                except Exception as e:
+                    logger.error(f"DB insert failed for {class_name}[{idx}]: {e}")
+                    await db.rollback()
+                    continue
+
+                c_vec = F.normalize(nlp_embedder.embed_text(caption).to(self.device), p=2, dim=-1).cpu().numpy()
+                h_embs = nlp_embedder.embed_batch(hashtags)
+                h_vec = F.normalize(torch.mean(h_embs, dim=0).to(self.device), p=2, dim=-1).cpu().numpy()
+                i_vec = F.normalize(nlp_embedder.embed_image(img_bytes).to(self.device), p=2, dim=-1).cpu().numpy()
+                try:
+                    await intel_service.index_post(
+                        db=db, post_id=post_id,
+                        caption_vec=c_vec, hashtag_vec=h_vec, image_vec=i_vec,
+                        metadata={"caption": caption, "is_animal_benchmark": True,
+                                  "animal_name": class_name, "sample_idx": idx}
+                    )
+                    class_post_ids[class_name][idx] = post_id
+                except Exception as e:
+                    logger.error(f"Redis index failed for {class_name}[{idx}]: {e}")
+
+        return class_post_ids
+
+    async def run_animal_db_benchmark(self, db) -> Dict[str, Any]:
+        """CIFAR-100 실제 이미지 200 샘플로 크로스모달 검색 정확도 벤치마크 후 자동 cleanup."""
+        class_post_ids = await self.inject_cifar_dataset(db)
+        all_post_ids = {pid for pids in class_post_ids.values() for pid in pids.values()}
+        if len(all_post_ids) < 10:
+            return {"status": "error", "message": f"Insufficient samples injected ({len(all_post_ids)})."}
+
+        from app.services.intelligence import intel_service
+        per_class = self._load_cifar100_samples()
+        total_samples = len(all_post_ids)
+        search_limit = min(total_samples, 200)
+
+        text_hits = {1: [], 3: [], 5: []}
+        image_hits = {1: [], 3: [], 5: []}
         details = []
-        text_to_image_hits = {1: [], 3: [], 5: []}
-        image_to_image_hits = {1: [], 3: [], 5: []}
-        
-        for item in ANIMAL_DATASET:
-            name = item["name"]
-            target_post_id = db_animals.get(name)
-            if not target_post_id:
-                continue
 
+        for class_name, idx_to_pid in class_post_ids.items():
+            class_pids = set(idx_to_pid.values())
+            n = len(class_pids)
+
+            # Text→Image: query = class label, check how many class images rank in top-k
             txt_results = await intel_service.discover(
-                db=db,
-                query_text=item["caption"],
-                limit=10,
-                use_personalization=False
+                db=db, query_text=class_name, limit=search_limit, use_personalization=False
             )
             txt_ids = [uuid.UUID(r["id"]) if isinstance(r["id"], str) else r["id"] for r in txt_results]
-            
-            text_rank = 999
-            if target_post_id in txt_ids:
-                text_rank = txt_ids.index(target_post_id) + 1
-            
+            txt_ranks = sorted([txt_ids.index(p) + 1 for p in class_pids if p in txt_ids])
+            best_text_rank = txt_ranks[0] if txt_ranks else 999
             for k in [1, 3, 5]:
-                text_to_image_hits[k].append(1.0 if text_rank <= k else 0.0)
+                text_hits[k].append(sum(1 for r in txt_ranks if r <= k) / n)
 
-            img_bytes = None
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    img_res = await client.get(item["url"])
-                    if img_res.status_code == 200:
-                        img_bytes = img_res.content
-            except Exception:
-                pass
-
-            if not img_bytes:
-                try:
-                    img = Image.new("RGB", (224, 224), color="lightblue")
-                    draw = ImageDraw.Draw(img)
-                    draw.rectangle([20, 20, 204, 204], outline="darkblue", width=4)
-                    draw.text((40, 100), item["name"].upper(), fill="darkblue")
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG")
-                    img_bytes = buf.getvalue()
-                except Exception:
-                    img_bytes = b""
-
-            img_results = await intel_service.discover_by_image(
-                db=db,
-                image_bytes=img_bytes,
-                limit=10,
-                use_personalization=False
-            )
-            img_ids = [uuid.UUID(r["id"]) if isinstance(r["id"], str) else r["id"] for r in img_results]
-
-            image_rank = 999
-            if target_post_id in img_ids:
-                image_rank = img_ids.index(target_post_id) + 1
-
-            for k in [1, 3, 5]:
-                image_to_image_hits[k].append(1.0 if image_rank <= k else 0.0)
+            # Image→Image: first sample → find other samples of same class
+            best_image_rank = 999
+            if 0 in idx_to_pid and per_class.get(class_name):
+                img_bytes = self._cifar_img_to_bytes(per_class[class_name][0])
+                img_results = await intel_service.discover_by_image(
+                    db=db, image_bytes=img_bytes, limit=search_limit, use_personalization=False
+                )
+                img_ids = [uuid.UUID(r["id"]) if isinstance(r["id"], str) else r["id"] for r in img_results]
+                other_pids = class_pids - {idx_to_pid[0]}
+                img_ranks = sorted([img_ids.index(p) + 1 for p in other_pids if p in img_ids])
+                best_image_rank = img_ranks[0] if img_ranks else 999
+                for k in [1, 3, 5]:
+                    image_hits[k].append(sum(1 for r in img_ranks if r <= k) / max(len(other_pids), 1))
+            else:
+                for k in [1, 3, 5]:
+                    image_hits[k].append(0.0)
 
             details.append({
-                "name": name,
-                "caption": item["caption"],
-                "url": item["url"],
-                "text_rank": text_rank if text_rank < 999 else "Not Found (10+)",
-                "image_rank": image_rank if image_rank < 999 else "Not Found (10+)"
+                "name": class_name,
+                "caption": f"{class_name}, sample 1",
+                "url": f"/benchmark/cifar100/{class_name}_0.jpg",
+                "text_rank": best_text_rank if best_text_rank < 999 else "Not Found",
+                "image_rank": best_image_rank if best_image_rank < 999 else "Not Found",
+                "sample_count": n,
             })
 
-        t2i_metrics = {
-            f"Recall@{k}": float(np.mean(text_to_image_hits[k])) for k in [1, 3, 5]
-        }
-        i2i_metrics = {
-            f"Recall@{k}": float(np.mean(image_to_image_hits[k])) for k in [1, 3, 5]
-        }
-
         ndcg_map = {1: 1.0, 2: 0.63, 3: 0.5, 4: 0.43, 5: 0.38}
-        t2i_metrics["NDCG@3"] = float(np.mean([ndcg_map.get(det["text_rank"], 0.0) if isinstance(det["text_rank"], int) and det["text_rank"] <= 3 else 0.0 for det in details]))
-        i2i_metrics["NDCG@3"] = float(np.mean([ndcg_map.get(det["image_rank"], 0.0) if isinstance(det["image_rank"], int) and det["image_rank"] <= 3 else 0.0 for det in details]))
+        t2i = {f"Recall@{k}": float(np.mean(text_hits[k])) for k in [1, 3, 5]}
+        i2i = {f"Recall@{k}": float(np.mean(image_hits[k])) for k in [1, 3, 5]}
+        t2i["NDCG@3"] = float(np.mean([
+            ndcg_map.get(d["text_rank"], 0.0) if isinstance(d["text_rank"], int) and d["text_rank"] <= 3 else 0.0
+            for d in details]))
+        i2i["NDCG@3"] = float(np.mean([
+            ndcg_map.get(d["image_rank"], 0.0) if isinstance(d["image_rank"], int) and d["image_rank"] <= 3 else 0.0
+            for d in details]))
+
+        await self._cleanup_benchmark(db, all_post_ids)
 
         return {
             "status": "success",
-            "dataset_name": "Famous Animal Classification Dataset (20 Classes)",
-            "sample_size": len(details),
-            "text_to_image": t2i_metrics,
-            "image_to_image": i2i_metrics,
-            "details": details
+            "dataset_name": f"CIFAR-100 ({len(class_post_ids)} classes × {self.CIFAR100_SAMPLES_PER_CLASS} samples = {total_samples} items)",
+            "sample_size": total_samples,
+            "text_to_image": t2i,
+            "image_to_image": i2i,
+            "details": details,
         }
 
-ANIMAL_DATASET = [
-    {
-        "name": "dog",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/1/18/Dog_Chihuahua.jpg",
-        "caption": "a cute small brown chihuahua dog sitting on the floor looking at the camera",
-        "hashtags": ["dog", "puppy", "chihuahua", "animal"]
-    },
-    {
-        "name": "cat",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/3/3a/Cat03.jpg",
-        "caption": "a close up portrait of a cute domestic tabby cat with bright green eyes",
-        "hashtags": ["cat", "kitty", "pet", "animal"]
-    },
-    {
-        "name": "tiger",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/5/56/Bengal_Tiger_in_a_national_park.jpg",
-        "caption": "a majestic wild bengal tiger with orange and black stripes walking in the green forest",
-        "hashtags": ["tiger", "wildcat", "predator", "animal"]
-    },
-    {
-        "name": "lion",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/7/73/Lion_waiting_in_Namibia.jpg",
-        "caption": "a powerful male lion with a large dark mane sitting in the dry yellow savanna grass",
-        "hashtags": ["lion", "king", "savanna", "animal"]
-    },
-    {
-        "name": "elephant",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/3/37/African_Bush_Elephant.jpg",
-        "caption": "a massive grey african bush elephant standing in the grass field under sunlight",
-        "hashtags": ["elephant", "mammal", "safari", "animal"]
-    },
-    {
-        "name": "panda",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/0/0f/Grosser_Panda.JPG",
-        "caption": "a cute giant panda bear sitting down and eating green bamboo leaves",
-        "hashtags": ["panda", "bear", "china", "animal"]
-    },
-    {
-        "name": "giraffe",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/9/9f/Giraffe_standing.jpg",
-        "caption": "a very tall giraffe with brown spot patterns standing near green acacia trees",
-        "hashtags": ["giraffe", "tall", "safari", "animal"]
-    },
-    {
-        "name": "zebra",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/0/07/Plains_Zebra_Equus_quagga_at_Etosha_National_Park.jpg",
-        "caption": "a wild plains zebra with distinct black and white stripes standing in dry grass",
-        "hashtags": ["zebra", "stripes", "safari", "animal"]
-    },
-    {
-        "name": "bear",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/7/71/2010-kodiak-bear-1.jpg",
-        "caption": "a large brown kodiak bear standing in wild green forest stream searching for fish",
-        "hashtags": ["bear", "grizzly", "wildlife", "animal"]
-    },
-    {
-        "name": "monkey",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/4/43/Bonobo_sitting.jpg",
-        "caption": "a black bonobo monkey sitting on the ground looking forward with human like eyes",
-        "hashtags": ["monkey", "ape", "bonobo", "animal"]
-    },
-    {
-        "name": "wolf",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/5/5f/Kolm%C3%A5rden_Wolf.jpg",
-        "caption": "a grey wolf standing in a snowy winter forest looking alert with sharp eyes",
-        "hashtags": ["wolf", "predator", "wildlife", "forest"]
-    },
-    {
-        "name": "fox",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/3/30/Vulpes_vulpes_ssp_fulvus.jpg",
-        "caption": "a beautiful red fox sitting on green grass looking sideways with a bushy tail",
-        "hashtags": ["fox", "redFox", "wildlife", "animal"]
-    },
-    {
-        "name": "eagle",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/1/1a/24701-nature-natural-beauty.jpg",
-        "caption": "a majestic bald eagle soaring high in the blue sky with wings fully spread",
-        "hashtags": ["eagle", "bird", "raptor", "wildlife"]
-    },
-    {
-        "name": "penguin",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/0/08/South_Geogia_Elephant_Seals_and_Penguins.jpg",
-        "caption": "a group of emperor penguins huddled together on the white snow in antarctica",
-        "hashtags": ["penguin", "arctic", "bird", "animal"]
-    },
-    {
-        "name": "dolphin",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/1/10/Tursiops_truncatus_01.jpg",
-        "caption": "a bottlenose dolphin leaping gracefully out of the turquoise ocean water",
-        "hashtags": ["dolphin", "ocean", "marine", "animal"]
-    },
-    {
-        "name": "horse",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/d/d9/Collage_of_Nine_Dogs.jpg",
-        "caption": "a white horse galloping freely in a wide open green meadow at sunset",
-        "hashtags": ["horse", "equine", "gallop", "animal"]
-    },
-    {
-        "name": "gorilla",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Gorilla_gorilla_gorilla01.jpg",
-        "caption": "a massive silverback gorilla sitting in the tropical rainforest staring intensely",
-        "hashtags": ["gorilla", "ape", "primate", "wildlife"]
-    },
-    {
-        "name": "cheetah",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/0/09/TheCheethcat.jpg",
-        "caption": "a spotted cheetah running at full speed across the open african savanna grassland",
-        "hashtags": ["cheetah", "fastAnimal", "wildcat", "africa"]
-    },
-    {
-        "name": "flamingo",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b2/Flamingos_Laguna_Colorada.jpg",
-        "caption": "a flock of pink flamingos standing in a shallow red lake at high altitude",
-        "hashtags": ["flamingo", "bird", "pink", "wildlife"]
-    },
-    {
-        "name": "crocodile",
-        "url": "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg",
-        "caption": "a large nile crocodile basking in the sun on a muddy riverbank with its mouth open",
-        "hashtags": ["crocodile", "reptile", "predator", "wildlife"]
-    }
-]
+    async def _cleanup_benchmark(self, db, post_ids: set) -> None:
+        """벤치마크 완료 후 DB와 Redis에서 주입된 데이터 전체 삭제."""
+        system_user_id = uuid.UUID("00000000-0000-0000-0000-000000000000")
+        try:
+            from app.services.intelligence import intel_service
+            for pid in post_ids:
+                try:
+                    await intel_service.remove_post(pid)
+                except Exception as e:
+                    logger.warning(f"Redis remove failed for {pid}: {e}")
+
+            await db.execute(text("DELETE FROM upload.media WHERE user_id = :uid"), {"uid": system_user_id})
+            await db.execute(text("DELETE FROM upload.post WHERE user_id = :uid"), {"uid": system_user_id})
+            await db.execute(text("DELETE FROM upload.content WHERE user_id = :uid"), {"uid": system_user_id})
+            await db.execute(text(
+                "DELETE FROM search.post_vectors WHERE (content_text->>'is_animal_benchmark')::boolean = true"
+            ))
+            await db.commit()
+            logger.info(f"🧹 Cleaned up {len(post_ids)} benchmark posts from DB and Redis.")
+        except Exception as e:
+            logger.error(f"❌ Cleanup failed: {e}")
+            await db.rollback()
+
 
 benchmark_service = BenchmarkService()
