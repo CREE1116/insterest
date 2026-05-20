@@ -13,6 +13,7 @@ on:
       - 'user_service/**'
       - 'recommendation_service/**'
       - 'frontend/**'
+      - 'console_frontend/**'
       - 'infra/k8s/**'
       - '.github/workflows/**'
   workflow_dispatch: # 수동 실행 버튼 추가
@@ -31,6 +32,7 @@ jobs:
           - { name: 'user-service', path: 'user_service' }
           - { name: 'recommendation-service', path: 'recommendation_service' }
           - { name: 'frontend', path: 'frontend' }
+          - { name: 'console-frontend', path: 'console_frontend' }
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -87,6 +89,7 @@ jobs:
             user-service: 'user_service/**'
             recommendation-service: 'recommendation_service/**'
             frontend: 'frontend/**'
+            console-frontend: 'console_frontend/**'
 
       - name: Checkout Infra Repo
         uses: actions/checkout@v4
@@ -110,7 +113,7 @@ jobs:
           CHANGES='${{ steps.filter.outputs.changes }}'
           echo "Changes detected: $CHANGES"
           
-          SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend")
+          SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend" "console-frontend")
           
           for service in "${SERVICES[@]}"; do
             IS_CHANGED=$(echo "$CHANGES" | jq -r ".[] | select(. == \"$service\")")

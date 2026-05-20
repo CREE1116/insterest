@@ -279,7 +279,7 @@ const AppContent: React.FC = () => {
                 onChange={e => setSearchQuery(e.target.value)} 
                 style={{ 
                   width: '100%', 
-                  padding: `1rem 3.5rem 1rem ${searchImage ? '13.5rem' : '3.75rem'}`, 
+                  padding: `1rem 3.5rem 1rem ${searchImage ? '16.5rem' : '3.75rem'}`, 
                   borderRadius: '24px', 
                   backgroundColor: '#f1f5f9', 
                   border: 'none', 

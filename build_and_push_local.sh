@@ -1,7 +1,7 @@
 #!/bin/bash
 
-SERVICES=("auth_service" "upload_service" "generation_service" "interaction_service" "comment_service" "user_service" "recommendation_service" "frontend")
-IMAGE_NAMES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend")
+SERVICES=("auth_service" "upload_service" "generation_service" "interaction_service" "comment_service" "user_service" "recommendation_service" "frontend" "console_frontend")
+IMAGE_NAMES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend" "console-frontend")
 DOCKERHUB_USER="cree1116"
 
 echo "🚀 Starting local build and push for all services..."

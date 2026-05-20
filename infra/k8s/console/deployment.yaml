@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: console-frontend
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30088
+  selector:
+    app: console-frontend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console-frontend
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: console-frontend
+  template:
+    metadata:
+      labels:
+        app: console-frontend
+    spec:
+      containers:
+      - name: console-frontend
+        image: cree1116/console-frontend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80

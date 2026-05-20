@@ -39,7 +39,7 @@ spec:
       containers:
       - name: recommendation-service
         image: cree1116/recommendation-service:2f37115d4262d5ef37b9428990026288c9925c36
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8008
         env:
@@ -65,6 +65,11 @@ spec:
           value: "http://comment-service:8005"
         - name: MODEL_SAVE_PATH
           value: "/data/models/discovery_engine.pth"
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: generation-secrets-manual
+              key: GEMINI_API_KEY
         readinessProbe:
           httpGet:
             path: /health

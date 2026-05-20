@@ -7,8 +7,8 @@ echo "🚀 Starting Robust Interest MSA Deployment (Tag: $TAG)..."
 export DOCKER_BUILDKIT=1
 
 # 1. Image and Directory Mapping
-services=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend")
-dirs=("auth_service" "upload_service" "generation_service" "interaction_service" "comment_service" "user_service" "recommendation_service" "frontend")
+services=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend" "console-frontend")
+dirs=("auth_service" "upload_service" "generation_service" "interaction_service" "comment_service" "user_service" "recommendation_service" "frontend" "console_frontend")
 # Postgres version updated to 16-alpine to match latest postgres.yaml
 base_images=("postgres:16-alpine" "redis:7-alpine" "apache/kafka:3.7.0")
 
@@ -109,6 +109,7 @@ kubectl apply -f infra/k8s/user/deployment.yaml
 kubectl apply -f infra/k8s/recommendation/deployment.yaml
 kubectl apply -f infra/k8s/recommendation/cronjob.yaml
 kubectl apply -f infra/k8s/frontend/deployment.yaml
+kubectl apply -f infra/k8s/console/deployment.yaml
 
 # 6. Patch and Restart
 echo "🛠 Patching and Refreshing deployments to $TAG..."
@@ -124,8 +125,9 @@ k_patch comment-service comment-service comment-service
 k_patch user-app user-app user-service
 k_patch recommendation-service recommendation-service recommendation-service
 k_patch frontend frontend frontend
+k_patch console-frontend console-frontend console-frontend
 
-kubectl rollout restart deployment auth-app upload-service generation-service interaction-service comment-service user-app recommendation-service frontend
+kubectl rollout restart deployment auth-app upload-service generation-service interaction-service comment-service user-app recommendation-service frontend console-frontend
 
 echo "⏳ Waiting for recommendation-service to be ready for sync..."
 kubectl wait --for=condition=available --timeout=300s deployment/recommendation-service
@@ -134,6 +136,7 @@ kubectl wait --for=condition=available --timeout=300s deployment/recommendation-
 echo "🔌 Setting up Port Forwarding..."
 pkill -f "port-forward" || true
 kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 80:80 > /dev/null 2>&1 &
+kubectl port-forward service/console-frontend 30088:80 --address 0.0.0.0 > /dev/null 2>&1 &
 
 for i in {1..10}; do
     if nc -z localhost 80; then
