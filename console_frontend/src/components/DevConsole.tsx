@@ -6,7 +6,8 @@ import {
 } from 'lucide-react';
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer
 } from 'recharts';
 import client from '../api/client';
@@ -23,6 +24,7 @@ interface MetricsReport {
     recommendation_quality: MetricDetail;
     search_fidelity: MetricDetail;
   };
+  training_loss?: Array<{ epoch: number; loss: number }>;
 }
 
 interface ActiveUser {
@@ -496,7 +498,8 @@ const DevConsole: React.FC = () => {
             {metricsLoading ? (
               <div style={{ padding: '6rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                 <RefreshCw size={40} className="animate-spin" style={{ margin: '0 auto 1rem', color: 'var(--primary-red)' }} />
-                <p style={{ fontWeight: 700 }}>추천 정확도 메트릭을 연산하는 중입니다...</p>
+                <p style={{ fontWeight: 700 }}>UserTower 재학습 후 NDCG/Recall 측정 중... (수 분 소요)</p>
+                <p style={{ fontSize: '0.8125rem', color: '#94a3b8', marginTop: '0.5rem' }}>학습 → 평가 순서로 진행됩니다</p>
               </div>
             ) : metrics ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
@@ -554,6 +557,27 @@ const DevConsole: React.FC = () => {
                     </ResponsiveContainer>
                   </div>
                 </div>
+
+                {/* Training Loss Chart */}
+                {metrics.training_loss && metrics.training_loss.length > 0 && (
+                  <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
+                    <h3 style={{ fontSize: '1rem', fontWeight: 800, marginBottom: '1.25rem', color: '#0f172a' }}>
+                      📉 학습 손실 커브 (InfoNCE Loss)
+                      <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#94a3b8', marginLeft: '0.75rem' }}>
+                        최종: {metrics.training_loss[metrics.training_loss.length - 1].loss.toFixed(4)}
+                      </span>
+                    </h3>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <LineChart data={metrics.training_loss} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                        <XAxis dataKey="epoch" label={{ value: 'Epoch', position: 'insideBottomRight', offset: -8, style: { fontSize: 11, fill: '#94a3b8' } }} tick={{ fontSize: 11, fill: '#94a3b8' }} />
+                        <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} domain={['auto', 'auto']} />
+                        <Tooltip formatter={(v: number) => v.toFixed(4)} labelFormatter={(l) => `Epoch ${l}`} />
+                        <Line type="monotone" dataKey="loss" name="avg_loss" stroke="#e60023" strokeWidth={2.5} dot={{ r: 4, fill: '#e60023' }} activeDot={{ r: 6 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
                   <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>

@@ -34,6 +34,8 @@ class UnifiedIntelligenceService:
         # Item-item Jaccard CF cache (item_id → frozenset of user_ids)
         self._cf_item_users: Optional[Dict[str, frozenset]] = None
         self._cf_cache_ts: float = 0.0
+        # Last training loss history (populated by train_discovery / evaluate_offline)
+        self._last_loss_history: list = []
 
     async def discover(self, db: AsyncSession, query_text: str = None, user_id: uuid.UUID = None,
                        limit: int = 20, skip: int = 0, use_personalization: bool = True,
@@ -286,12 +288,7 @@ class UnifiedIntelligenceService:
         """Item-item Jaccard CF from co-like patterns. 5-min in-process cache."""
         now = time.time()
         if self._cf_item_users is None or now - self._cf_cache_ts > 300:
-            # JOIN auth.users to exclude synthetic benchmark personas (not in auth.users)
-            res = await db.execute(text("""
-                SELECT il.post_id, il.user_id
-                FROM interaction.likes il
-                JOIN auth.users au ON au.id = il.user_id
-            """))
+            res = await db.execute(text("SELECT post_id, user_id FROM interaction.likes"))
             item_users: Dict[str, set] = {}
             for post_id, user_id in res.all():
                 pid = str(post_id)
@@ -513,9 +510,10 @@ class UnifiedIntelligenceService:
                         train_data.append((hist, target))
 
             # CPU-bound 학습 루프를 스레드에서 실행 → 이벤트 루프 블로킹 방지
-            await asyncio.to_thread(
+            loss_history = await asyncio.to_thread(
                 self._run_training_loop, raw_clip, train_data, _build_lookup, BATCH
             )
+            self._last_loss_history = loss_history
 
             logger.info("✅ [UserTower+ItemGate] Training complete.")
             self.trainer.save_model(settings.MODEL_SAVE_PATH)
@@ -528,13 +526,13 @@ class UnifiedIntelligenceService:
         except Exception as e:
             logger.error(f"❌ Training failure: {e}", exc_info=True)
 
-    def _run_training_loop(self, raw_clip, train_data, build_lookup_fn, BATCH=32):
-        """순수 CPU/GPU 연산만 수행 — asyncio.to_thread에서 호출."""
+    def _run_training_loop(self, raw_clip, train_data, build_lookup_fn, BATCH=32) -> list:
+        """순수 CPU/GPU 연산만 수행 — asyncio.to_thread에서 호출. epoch loss 이력 반환."""
         item_emb_lookup = build_lookup_fn()
         EPOCHS = 50
-        # lookup 재빌드 주기: 10→5 에폭으로 단축하여 stale embedding으로 인한 손실 스파이크 감소
         REBUILD_EVERY = 5
         self.model.train()
+        loss_history = []
         for epoch in range(EPOCHS):
             if epoch > 0 and epoch % REBUILD_EVERY == 0:
                 item_emb_lookup = build_lookup_fn()
@@ -576,14 +574,81 @@ class UnifiedIntelligenceService:
                 n_batches += 1
             if (epoch + 1) % 5 == 0:
                 avg_loss = total_loss / max(n_batches, 1)
+                loss_history.append({"epoch": epoch + 1, "loss": round(avg_loss, 4)})
                 logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} (total={total_loss:.4f}, batches={n_batches})")
+        return loss_history
 
     async def evaluate_offline(self, db: AsyncSession):
         """
-        자동화된 오프라인 성능 측정 (NDCG, Recall)
+        학습 → 오프라인 성능 측정 (NDCG, Recall) 통합 파이프라인.
+        먼저 현재 데이터로 UserTower를 재학습한 뒤 지표를 측정한다.
         """
         try:
-            logger.info("📊 Starting offline evaluation (NDCG/Recall)...")
+            logger.info("📊 [Eval] Phase 1/2: Training on current data...")
+
+            # ── Phase 1: 학습 (백필 없이 순수 학습만) ─────────────────────
+            loss_history: list = []
+            try:
+                BATCH = 32
+                res = await db.execute(text(
+                    "SELECT user_id, post_id FROM interaction.likes ORDER BY created_at ASC LIMIT 1000"
+                ))
+                rows = res.all()
+                user_sequences: Dict[Any, List] = {}
+                for uid, pid in rows:
+                    user_sequences.setdefault(uid, []).append(pid)
+
+                res2 = await db.execute(select(PostVector))
+                all_vectors = res2.scalars().all()
+                p_vectors = {v.post_id: v for v in all_vectors}
+
+                if all_vectors and len(user_sequences) >= 2:
+                    raw_clip: Dict[Any, tuple] = {}
+                    with torch.no_grad():
+                        for v in all_vectors:
+                            cap_bytes = v.caption_vector
+                            if len(cap_bytes) == 768 * 4:
+                                meta = v.content_text or {}
+                                mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
+                                c_t = nlp_embedder.embed_text_clip(mood).unsqueeze(0) if mood else torch.zeros(1, 512)
+                            else:
+                                c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).unsqueeze(0)
+                            img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).unsqueeze(0)
+                            h_bytes = v.hashtag_vector
+                            h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0) \
+                                  if h_bytes and len(h_bytes) == 512 * 4 else None
+                            raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None)
+
+                    def _eval_build_lookup():
+                        lookup = {}
+                        with torch.no_grad():
+                            for pid, (c, img, h) in raw_clip.items():
+                                c_d = c.to(self.device)
+                                img_d = img.to(self.device)
+                                h_d = h.to(self.device) if h is not None else None
+                                lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0).detach()
+                        return lookup
+
+                    train_data = []
+                    for uid, pids in user_sequences.items():
+                        for i in range(1, len(pids)):
+                            hist = pids[:i][-10:]
+                            target = pids[i]
+                            if target in p_vectors and all(h in p_vectors for h in hist):
+                                train_data.append((hist, target))
+
+                    loss_history = await asyncio.to_thread(
+                        self._run_training_loop, raw_clip, train_data, _eval_build_lookup, BATCH
+                    )
+                    self._last_loss_history = loss_history
+                    self.trainer.save_model(settings.MODEL_SAVE_PATH)
+                    logger.info(f"✅ [Eval] Phase 1 done. {len(loss_history)} loss points recorded.")
+                else:
+                    logger.info("ℹ️ [Eval] Skipped training (insufficient data).")
+            except Exception as e:
+                logger.warning(f"⚠️ [Eval] Training phase failed, using current model: {e}")
+
+            logger.info("📊 [Eval] Phase 2/2: Measuring NDCG/Recall...")
             
             # 1. 상호작용 데이터 로드
             res = await db.execute(text("SELECT user_id, post_id FROM interaction.likes ORDER BY created_at"))
@@ -654,7 +719,8 @@ class UnifiedIntelligenceService:
                 "status": "success",
                 "sample_size_users": len(test_users),
                 "sample_size_search": len(search_metrics[k_list[0]]["ndcg"]),
-                "metrics": final_summary
+                "metrics": final_summary,
+                "training_loss": loss_history,
             }
         except Exception as e:
             logger.error(f"❌ Evaluation error: {e}", exc_info=True)
