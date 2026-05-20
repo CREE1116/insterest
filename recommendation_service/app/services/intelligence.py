@@ -36,21 +36,25 @@ class UnifiedIntelligenceService:
                        exclude_history_ids: List[uuid.UUID] = None,
                        history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
         """
-        검색 + 개인화 추천:
-        - 아이템 벡터는 Redis HNSW 512-dim 인덱스 사용 (모델 재계산 없음)
-        - 쿼리/유저 벡터만 실시간 계산 후 ANN 검색
+        검색 + 개인화 추천 (Late Fusion + RRF):
+        - SBERT(768-dim)을 이용한 텍스트 검색 랭킹 리스트 생성
+        - UserTower(512-dim)을 이용한 개인화 취향 랭킹 리스트 생성
+        - RRF(Reciprocal Rank Fusion)를 사용하여 두 랭킹 리스트를 병합
         - 콜드스타트: 인기도 × 시간감쇠 트렌딩 폴백
         """
         from app.ml.vector_store import vector_store
         try:
-            # 1. 검색어 벡터 계산 (CLIP text → 512-dim)
-            query_vec = None
+            rank_lists = []
+            k_search = max(200, limit * 3 + skip)
+
+            # 1. 텍스트 검색어 분기 (SBERT 768-dim)
             if query_text:
                 with torch.no_grad():
-                    raw_vec = nlp_embedder.embed_text_clip(query_text).unsqueeze(0)
-                    query_vec = self.model.get_query_embedding(raw_vec).squeeze(0).cpu().numpy()
+                    sbert_vec = nlp_embedder.embed_text(query_text).cpu().numpy()
+                text_ids = vector_store.search_knn(sbert_vec, k=k_search, vector_field="text_vector")
+                rank_lists.append([str(pid) for pid in text_ids])
 
-            # 2. 유저 히스토리 → UserTower → 512-dim user_vec
+            # 2. 유저 개인화 취향 분기 (UserTower -> CLIP 512-dim)
             user_vec = None
             if (user_id or history_ids) and use_personalization:
                 if not history_ids and user_id:
@@ -87,27 +91,24 @@ class UnifiedIntelligenceService:
                                 padded[0, i] = emb
                             user_vec = self.model.get_user_embedding(padded).squeeze(0).cpu().numpy()
 
-            # 3. 검색 / 추천 / 혼합 분기
-            if query_vec is not None and user_vec is None:
-                search_vec = query_vec
-            elif query_vec is not None or user_vec is not None:
-                with torch.no_grad():
-                    q_t = torch.from_numpy(query_vec).to(self.device) if query_vec is not None \
-                          else torch.zeros(512, device=self.device)
-                    u_t = torch.from_numpy(user_vec).to(self.device) if user_vec is not None \
-                          else torch.zeros(512, device=self.device)
-                    search_vec = self.model.discovery(q_t.unsqueeze(0), u_t.unsqueeze(0)).squeeze(0).cpu().numpy()
-            else:
-                search_vec = None
+            if user_vec is not None:
+                user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector")
+                rank_lists.append([str(pid) for pid in user_ids])
 
-            if search_vec is not None:
-                # Redis HNSW ANN 검색 — 충분한 후보 확보를 위해 2배 오버페치
-                k_fetch = (limit + len(exclude_history_ids or []) + skip) * 2 + 20
-                result_ids = vector_store.search_knn(search_vec, k=k_fetch)
-                exclude_set = set(str(i) for i in (exclude_history_ids or []))
-                filtered = [str(pid) for pid in result_ids if str(pid) not in exclude_set]
-                page = filtered[skip: skip + limit]
-                return [{"id": pid, "score": 1.0} for pid in page]
+            # RRF 병합
+            exclude_set = set(str(i) for i in (exclude_history_ids or []))
+            if rank_lists:
+                rrf_scores = {}
+                k_rrf = 60
+                for r_list in rank_lists:
+                    for rank, pid in enumerate(r_list):
+                        if pid in exclude_set:
+                            continue
+                        rrf_scores[pid] = rrf_scores.get(pid, 0.0) + 1.0 / (k_rrf + (rank + 1))
+
+                sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+                page = sorted_items[skip: skip + limit]
+                return [{"id": pid, "score": float(score)} for pid, score in page]
 
             # Fallback: 인기도 × 시간감쇠 트렌딩
             stmt = text("""
@@ -128,8 +129,10 @@ class UnifiedIntelligenceService:
                                 limit: int = 20, skip: int = 0, use_personalization: bool = True,
                                 exclude_history_ids: List[uuid.UUID] = None) -> List[Dict[str, Any]]:
         """
-        이미지 검색: CLIP image → 512-dim → 통합 item 벡터 인덱스 검색.
-        item 벡터 = normalize(CLIP_text + CLIP_image) 이므로 이미지 쿼리가 자연스럽게 정렬됨.
+        이미지 검색 (Late Fusion + RRF):
+        - CLIP image(512-dim) 기반 이미지 검색 랭킹 생성
+        - UserTower(512-dim) 기반 개인화 추천 랭킹 생성
+        - RRF(Reciprocal Rank Fusion)를 사용하여 두 랭킹 병합
         """
         import torch.nn.functional as F
         from app.ml.vector_store import vector_store
@@ -138,39 +141,67 @@ class UnifiedIntelligenceService:
             if torch.norm(raw_img_vec) < 1e-6:
                 raise ValueError("Image vector is zero")
 
-            # 개인화 있으면 discovery fusion, 없으면 raw image vec
+            img_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
+            k_search = max(200, limit * 3 + skip)
+
+            rank_lists = []
+
+            # 1. 이미지 검색 랭킹
+            img_ids = vector_store.search_knn(img_norm, k=k_search, vector_field="vector")
+            rank_lists.append([str(pid) for pid in img_ids])
+
+            # 2. 개인화 랭킹 (UserTower)
+            user_vec = None
             if user_id and use_personalization:
-                results = await self.discover(
-                    db, query_text=None, user_id=user_id,
-                    limit=limit, skip=skip, use_personalization=True,
-                    exclude_history_ids=exclude_history_ids,
-                )
-                # image 쿼리와 discovery 결과를 블렌딩: image 70% + user 30%
-                img_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
-                k_search = (limit + len(exclude_history_ids or []) + skip) * 2 + 20
-                img_ids = vector_store.search_knn(img_norm, k=k_search)
-                exclude_set = set(str(i) for i in (exclude_history_ids or []))
-                img_ids_str = [str(i) for i in img_ids if str(i) not in exclude_set]
-                # rank-based blend
-                img_rank = {pid: r for r, pid in enumerate(img_ids_str)}
-                disc_rank = {r["id"]: r2 for r2, r in enumerate(results)}
-                all_ids = list(dict.fromkeys(img_ids_str + [r["id"] for r in results]))
-                scored = []
-                for pid in all_ids:
-                    s_img  = 1.0 / (1 + img_rank.get(pid, 999))
-                    s_disc = 1.0 / (1 + disc_rank.get(pid, 999))
-                    scored.append((pid, 0.7 * s_img + 0.3 * s_disc))
-                scored.sort(key=lambda x: x[1], reverse=True)
-                page = scored[skip: skip + limit]
-                return [{"id": pid, "score": s} for pid, s in page]
-            else:
-                img_norm = F.normalize(raw_img_vec, p=2, dim=-1).cpu().numpy()
-                k_search = (limit + len(exclude_history_ids or []) + skip) * 2 + 20
-                result_ids = vector_store.search_knn(img_norm, k=k_search)
-                exclude_set = set(str(i) for i in (exclude_history_ids or []))
-                filtered = [str(i) for i in result_ids if str(i) not in exclude_set]
-                page = filtered[skip: skip + limit]
-                return [{"id": pid, "score": 1.0} for pid in page]
+                stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at ASC LIMIT 10")
+                res = await db.execute(stmt, {"uid": user_id})
+                history_ids = [row[0] for row in res.all()]
+
+                if history_ids:
+                    res = await db.execute(select(PostVector).where(PostVector.post_id.in_(history_ids)))
+                    p_vectors = {v.post_id: v for v in res.scalars().all()}
+
+                    hist_embs = []
+                    with torch.no_grad():
+                        for h_id in history_ids:
+                            if h_id in p_vectors:
+                                v = p_vectors[h_id]
+                                cap_bytes = v.caption_vector
+                                if len(cap_bytes) == 768 * 4:
+                                    meta = v.content_text or {}
+                                    mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
+                                    if not mood:
+                                        continue
+                                    c = nlp_embedder.embed_text_clip(mood).unsqueeze(0).to(self.device)
+                                else:
+                                    c = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                img = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                                hist_embs.append(self.model.get_item_embedding(c, img).squeeze(0))
+
+                        if hist_embs:
+                            seq_len = 10
+                            padded = torch.zeros(1, seq_len, 512, device=self.device)
+                            for i, emb in enumerate(hist_embs[-seq_len:]):
+                                padded[0, i] = emb
+                            user_vec = self.model.get_user_embedding(padded).squeeze(0).cpu().numpy()
+
+            if user_vec is not None:
+                user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector")
+                rank_lists.append([str(pid) for pid in user_ids])
+
+            # RRF 병합
+            exclude_set = set(str(i) for i in (exclude_history_ids or []))
+            rrf_scores = {}
+            k_rrf = 60
+            for r_list in rank_lists:
+                for rank, pid in enumerate(r_list):
+                    if pid in exclude_set:
+                        continue
+                    rrf_scores[pid] = rrf_scores.get(pid, 0.0) + 1.0 / (k_rrf + (rank + 1))
+
+            sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+            page = sorted_items[skip: skip + limit]
+            return [{"id": pid, "score": float(score)} for pid, score in page]
 
         except Exception as e:
             logger.error(f"❌ Error in discover_by_image: {e}", exc_info=True)
@@ -208,7 +239,18 @@ class UnifiedIntelligenceService:
                 img = torch.from_numpy(image_vec).to(self.device).unsqueeze(0)
                 p_vec = self.model.get_item_embedding(c, img).squeeze(0).cpu().numpy()
 
-            vector_store.upsert_vector(str(post_id), p_vec, metadata=metadata)
+            # 3. SBERT 768-dim text_vector 계산 및 Redis 저장
+            caption = metadata.get("caption", "")
+            image_prompt = metadata.get("image_prompt", "")
+            music_prompt = metadata.get("music_prompt", "")
+            mood_text = f"{caption} {image_prompt} {music_prompt}".strip()
+            if mood_text:
+                with torch.no_grad():
+                    sbert_vec = nlp_embedder.embed_text(mood_text).cpu().numpy()
+            else:
+                sbert_vec = np.zeros(768, dtype=np.float32)
+
+            vector_store.upsert_vector(str(post_id), p_vec, text_vector=sbert_vec, metadata=metadata)
 
         except Exception as e:
             logger.error(f"❌ Indexing failed for {post_id}: {e}")
@@ -217,6 +259,7 @@ class UnifiedIntelligenceService:
         """
         DB의 모든 포스트를 Redis Vector Store에 재동기화합니다.
         레거시 SBERT 768-dim caption_vector 감지 시 metadata에서 CLIP 재인코딩.
+        동시에 SBERT 768-dim text_vector를 계산하여 Redis에 저장합니다.
         """
         try:
             from app.ml.vector_store import vector_store
@@ -254,7 +297,18 @@ class UnifiedIntelligenceService:
                         img_t = torch.from_numpy(np.frombuffer(img_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                         p_vec = self.model.get_item_embedding(c_t, img_t).squeeze(0).cpu().numpy()
 
-                    vector_store.upsert_vector(str(p.post_id), p_vec, metadata=p.content_text)
+                    # SBERT 768-dim text_vector 계산
+                    meta = p.content_text or {}
+                    caption = meta.get("caption", "")
+                    image_prompt = meta.get("image_prompt", "")
+                    music_prompt = meta.get("music_prompt", "")
+                    mood_text = f"{caption} {image_prompt} {music_prompt}".strip()
+                    if mood_text:
+                        sbert_vec = nlp_embedder.embed_text(mood_text).cpu().numpy()
+                    else:
+                        sbert_vec = np.zeros(768, dtype=np.float32)
+
+                    vector_store.upsert_vector(str(p.post_id), p_vec, text_vector=sbert_vec, metadata=p.content_text)
                     count += 1
                 except Exception as e:
                     logger.error(f"❌ Backfill failed for {p.post_id}: {e}")

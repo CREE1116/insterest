@@ -9,16 +9,35 @@ logger = logging.getLogger(__name__)
 
 class RedisVectorStore:
     """
-    Single 512-dim HNSW index in CLIP's unified text+image space.
-    Text queries, image queries, and user preference vectors all land in the same space.
+    Dual HNSW index in Redis:
+    - vector: 512-dim CLIP unified text+image space
+    - text_vector: 768-dim SBERT semantic text space
     """
     def __init__(self):
         self.r = redis.Redis(host=settings.REDIS_HOST, port=settings.RECO_REDIS_PORT, decode_responses=False)
         self.index_name = "post_vectors"
 
     def create_index(self):
-        """인덱스 생성. 이미 올바른 스키마로 존재하면 그대로 재사용."""
+        """인덱스 생성. 이미 올바른 듀얼 스키마로 존재하면 그대로 재사용."""
         try:
+            # text_vector 필드가 있는지 확인하여 없는 경우 드롭 후 재생성
+            try:
+                info = self.r.execute_command("FT.INFO", self.index_name)
+                # info is a list of key-value pairs
+                has_text_vector = False
+                for x in info:
+                    if isinstance(x, bytes) and b"text_vector" in x:
+                        has_text_vector = True
+                        break
+                    elif isinstance(x, str) and "text_vector" in x:
+                        has_text_vector = True
+                        break
+                if not has_text_vector:
+                    logger.warning("⚠️ Redis index doesn't contain 'text_vector'. Dropping to migrate to dual HNSW schema...")
+                    self.r.execute_command("FT.DROPINDEX", self.index_name)
+            except Exception:
+                pass
+
             self.r.execute_command(
                 "FT.CREATE", self.index_name,
                 "ON", "HASH",
@@ -29,8 +48,12 @@ class RedisVectorStore:
                 "TYPE", "FLOAT32",
                 "DIM", "512",
                 "DISTANCE_METRIC", "COSINE",
+                "text_vector", "VECTOR", "HNSW", "6",
+                "TYPE", "FLOAT32",
+                "DIM", "768",
+                "DISTANCE_METRIC", "COSINE",
             )
-            logger.info(f"✅ Created 512-dim CLIP unified Redis HNSW Index: {self.index_name}")
+            logger.info(f"✅ Created CLIP 512-dim & SBERT 768-dim Dual Redis HNSW Index: {self.index_name}")
         except redis.exceptions.ResponseError as e:
             if "Index already exists" in str(e):
                 logger.info(f"✅ Redis index '{self.index_name}' already exists, reusing.")
@@ -52,8 +75,12 @@ class RedisVectorStore:
                         "TYPE", "FLOAT32",
                         "DIM", "512",
                         "DISTANCE_METRIC", "COSINE",
+                        "text_vector", "VECTOR", "HNSW", "6",
+                        "TYPE", "FLOAT32",
+                        "DIM", "768",
+                        "DISTANCE_METRIC", "COSINE",
                     )
-                    logger.info(f"✅ Recreated Redis index: {self.index_name}")
+                    logger.info(f"✅ Recreated Redis index with dual HNSW schema: {self.index_name}")
                 except redis.exceptions.ResponseError as e2:
                     logger.error(f"❌ Failed to recreate Redis index: {e2}")
 
@@ -69,9 +96,9 @@ class RedisVectorStore:
         except Exception:
             return 0
 
-    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray, image_vector: np.ndarray = None, metadata: Dict[str, Any] = None):  # image_vector kept for API compat, unused
+    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray, text_vector: np.ndarray = None, metadata: Dict[str, Any] = None, image_vector: np.ndarray = None):
         """
-        128차원 투영 벡터, 512차원 이미지 벡터 및 메타데이터를 Redis에 저장
+        CLIP 512차원 벡터, SBERT 768차원 벡터 및 메타데이터를 Redis에 저장
         """
         key = f"post:{post_id}"
         vector_bytes = vector.astype(np.float32).tobytes()
@@ -80,6 +107,9 @@ class RedisVectorStore:
             "post_id": str(post_id),
             "vector": vector_bytes
         }
+
+        if text_vector is not None:
+            mapping["text_vector"] = text_vector.astype(np.float32).tobytes()
 
         if image_vector is not None:
             mapping["image_vector"] = image_vector.astype(np.float32).tobytes()
@@ -93,7 +123,7 @@ class RedisVectorStore:
 
     def search_knn(self, query_vec: np.ndarray, k: int = 50, vector_field: str = "vector") -> List[uuid.UUID]:
         """
-        K-Nearest Neighbors Search using COSINE similarity on a specified vector field ('vector' or 'image_vector')
+        K-Nearest Neighbors Search using COSINE similarity on a specified vector field ('vector' or 'text_vector')
         """
         query_vec_bytes = query_vec.astype(np.float32).tobytes()
         
