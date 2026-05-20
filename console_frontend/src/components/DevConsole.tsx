@@ -789,9 +789,9 @@ const DevConsole: React.FC = () => {
                 <div style={{ border: '1px solid #e2e8f0', borderRadius: '24px', padding: '2rem', backgroundColor: 'white' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
                     <div>
-                      <h3 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>동물 분류 데이터셋 평가 (DB 실시간 주입)</h3>
+                      <h3 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>CIFAR-100 실제 이미지 벤치마크 (DB 실시간 주입)</h3>
                       <p style={{ fontSize: '0.9375rem', color: '#64748b', marginTop: '0.375rem', lineHeight: '1.5' }}>
-                        Wikimedia 공용 이미지 20종(개, 고양이, 호랑이, 사자, 늑대, 독수리 등)을 실제 DB에 주입하고 Redis HNSW 기반 Recall·NDCG를 측정합니다.
+                        CIFAR-100 데이터셋 100개 클래스 × 2샘플 = 200장의 실제 이미지를 DB에 주입하고 크로스모달(텍스트→이미지, 이미지→이미지) Recall·NDCG를 측정합니다. 테스트 후 자동 삭제됩니다.
                       </p>
                     </div>
                     <button
@@ -807,7 +807,7 @@ const DevConsole: React.FC = () => {
                   {animalLoading && (
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4rem', flexDirection: 'column', gap: '1rem' }}>
                       <RefreshCw size={40} className="animate-spin" style={{ color: '#16a34a' }} />
-                      <p style={{ fontWeight: 700, color: '#64748b' }}>20종 동물 이미지 다운로드 및 Redis 인덱싱 중...</p>
+                      <p style={{ fontWeight: 700, color: '#64748b' }}>CIFAR-100 다운로드 및 200개 샘플 Redis 인덱싱 중... (수 분 소요)</p>
                     </div>
                   )}
 
@@ -840,7 +840,7 @@ const DevConsole: React.FC = () => {
                       {/* Detail table */}
                       <div>
                         <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a', marginBottom: '1rem' }}>
-                          개별 동물 매칭 순위 ({animalResult.sample_size}종)
+                          클래스별 검색 순위 ({animalResult.sample_size}개 클래스)
                         </h4>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
                           {animalResult.details.map(det => (
