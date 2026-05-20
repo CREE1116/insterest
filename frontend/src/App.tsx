@@ -258,7 +258,7 @@ const AppContent: React.FC = () => {
           <div style={{ padding: '2rem 1rem', display: 'flex', justifyContent: 'center' }}>
             <div style={{ position: 'relative', width: '100%', maxWidth: '600px' }}>
               {searchImage ? (
-                <div style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'white', padding: '0.35rem 0.75rem', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 2px 6px rgba(0,0,0,0.05)', zIndex: 10 }}>
+                <div style={{ position: 'absolute', left: '1.5rem', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem', backgroundColor: 'white', padding: '0.35rem 0.75rem', borderRadius: '16px', border: '1px solid #e2e8f0', boxShadow: '0 2px 6px rgba(0,0,0,0.05)', zIndex: 10 }}>
                   <img src={URL.createObjectURL(searchImage)} style={{ width: '20px', height: '20px', borderRadius: '6px', objectFit: 'cover' }} />
                   <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)' }}>이미지 검색</span>
                   <button 
@@ -279,7 +279,7 @@ const AppContent: React.FC = () => {
                 onChange={e => setSearchQuery(e.target.value)} 
                 style={{ 
                   width: '100%', 
-                  padding: `1rem 3.5rem 1rem ${searchImage ? '8.5rem' : '3.75rem'}`, 
+                  padding: `1rem 3.5rem 1rem ${searchImage ? '11rem' : '3.75rem'}`, 
                   borderRadius: '24px', 
                   backgroundColor: '#f1f5f9', 
                   border: 'none', 
