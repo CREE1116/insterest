@@ -22,6 +22,8 @@
 
 # ML Models & Outputs
 **/models/
+!upload_service/app/models/
+!upload_service/app/models/**
 **/outputs/
 **/*.pth
 
