@@ -813,53 +813,75 @@ const DevConsole: React.FC = () => {
 
                   {animalResult && (
                     <>
-                      {/* Big Metric Cards */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
-                        {['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'].map(m => (
-                          <div key={m} style={{ borderRadius: '20px', padding: '1.75rem 1.25rem', textAlign: 'center', border: '2px solid #bbf7d0', background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)' }}>
-                            <p style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#166534', marginBottom: '0.75rem', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Text→Image {m}</p>
-                            <p style={{ fontSize: '3rem', fontWeight: 900, color: '#15803d', lineHeight: 1, letterSpacing: '-0.04em' }}>
+                      {/* Summary metric cards: 2 rows × 4 cols */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                        {(['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'] as const).map(m => (
+                          <div key={`t2i-${m}`} style={{ borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center', border: '2px solid #bbf7d0', background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)' }}>
+                            <p style={{ fontSize: '0.75rem', fontWeight: 700, color: '#166534', marginBottom: '0.5rem', letterSpacing: '0.04em' }}>Text→Img {m}</p>
+                            <p style={{ fontSize: '2.5rem', fontWeight: 900, color: '#15803d', lineHeight: 1, letterSpacing: '-0.04em' }}>
                               {animalResult.text_to_image[m] !== undefined ? `${(animalResult.text_to_image[m] * 100).toFixed(0)}` : '—'}
                             </p>
-                            <p style={{ fontSize: '1rem', fontWeight: 700, color: '#16a34a', marginTop: '0.25rem' }}>%</p>
+                            <p style={{ fontSize: '0.875rem', fontWeight: 700, color: '#16a34a' }}>%</p>
                           </div>
                         ))}
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
-                        {['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'].map(m => (
-                          <div key={m} style={{ borderRadius: '20px', padding: '1.75rem 1.25rem', textAlign: 'center', border: '2px solid #bae6fd', background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)' }}>
-                            <p style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#075985', marginBottom: '0.75rem', letterSpacing: '0.04em', textTransform: 'uppercase' }}>Image→Image {m}</p>
-                            <p style={{ fontSize: '3rem', fontWeight: 900, color: '#0369a1', lineHeight: 1, letterSpacing: '-0.04em' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.75rem' }}>
+                        {(['Recall@1', 'Recall@3', 'Recall@5', 'NDCG@3'] as const).map(m => (
+                          <div key={`i2i-${m}`} style={{ borderRadius: '16px', padding: '1.25rem 1rem', textAlign: 'center', border: '2px solid #bae6fd', background: 'linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%)' }}>
+                            <p style={{ fontSize: '0.75rem', fontWeight: 700, color: '#075985', marginBottom: '0.5rem', letterSpacing: '0.04em' }}>Img→Img {m}</p>
+                            <p style={{ fontSize: '2.5rem', fontWeight: 900, color: '#0369a1', lineHeight: 1, letterSpacing: '-0.04em' }}>
                               {animalResult.image_to_image[m] !== undefined ? `${(animalResult.image_to_image[m] * 100).toFixed(0)}` : '—'}
                             </p>
-                            <p style={{ fontSize: '1rem', fontWeight: 700, color: '#0284c7', marginTop: '0.25rem' }}>%</p>
+                            <p style={{ fontSize: '0.875rem', fontWeight: 700, color: '#0284c7' }}>%</p>
                           </div>
                         ))}
                       </div>
 
-                      {/* Detail table */}
+                      {/* Per-class detail table */}
                       <div>
-                        <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a', marginBottom: '1rem' }}>
-                          클래스별 검색 순위 ({animalResult.sample_size}개 클래스)
+                        <h4 style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a', marginBottom: '0.75rem' }}>
+                          클래스별 검색 순위 ({animalResult.details.length}개 클래스)
                         </h4>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
-                          {animalResult.details.map(det => (
-                            <div key={det.name} style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', backgroundColor: '#f8fafc', padding: '0.875rem', borderRadius: '14px', border: '1px solid #e2e8f0' }}>
-                              <img src={det.url} alt={det.name} style={{ width: '52px', height: '52px', borderRadius: '10px', objectFit: 'cover', flexShrink: 0 }} onError={(e) => { (e.target as HTMLImageElement).src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='52' height='52' viewBox='0 0 52 52'><rect width='52' height='52' rx='10' fill='%23bae6fd'/><text x='50%' y='60%' font-size='14' font-weight='bold' text-anchor='middle' fill='%230284c7'>?</text></svg>"; }} />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <p style={{ fontSize: '0.9375rem', fontWeight: 800, textTransform: 'capitalize', color: '#0f172a' }}>{det.name}</p>
-                                <p style={{ fontSize: '0.75rem', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '0.125rem' }}>{det.caption}</p>
-                              </div>
-                              <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                                <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: '8px', backgroundColor: det.text_rank === 1 ? '#dcfce7' : '#fff7ed', color: det.text_rank === 1 ? '#15803d' : '#c2410c' }}>
-                                  텍스트 {det.text_rank === 999 ? 'N/A' : `${det.text_rank}위`}
-                                </span>
-                                <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: '8px', backgroundColor: det.image_rank === 1 ? '#dbeafe' : '#fff7ed', color: det.image_rank === 1 ? '#1d4ed8' : '#c2410c' }}>
-                                  이미지 {det.image_rank === 999 ? 'N/A' : `${det.image_rank}위`}
-                                </span>
-                              </div>
-                            </div>
-                          ))}
+                        <div style={{ borderRadius: '14px', border: '1px solid #e2e8f0', overflow: 'hidden' }}>
+                          {/* Table header */}
+                          <div style={{ display: 'grid', gridTemplateColumns: '2rem 1fr 6rem 6rem 6rem 6rem', gap: 0, backgroundColor: '#f1f5f9', borderBottom: '2px solid #e2e8f0', padding: '0.625rem 1rem', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b' }}>#</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b' }}>CLASS</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#166534', textAlign: 'center' }}>Text R@1</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#166534', textAlign: 'center' }}>Text R@3</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#075985', textAlign: 'center' }}>Img R@1</span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#075985', textAlign: 'center' }}>Img R@3</span>
+                          </div>
+                          {/* Table body — fixed height scrollable */}
+                          <div style={{ maxHeight: '420px', overflowY: 'auto' }}>
+                            {animalResult.details.map((det, idx) => {
+                              const tr = typeof det.text_rank === 'number' ? det.text_rank : 999;
+                              const ir = typeof det.image_rank === 'number' ? det.image_rank : 999;
+                              const rankBadge = (rank: number, type: 'text' | 'img') => {
+                                const isText = type === 'text';
+                                let bg, color;
+                                if (rank === 1)        { bg = isText ? '#dcfce7' : '#dbeafe'; color = isText ? '#15803d' : '#1d4ed8'; }
+                                else if (rank <= 3)    { bg = '#fef9c3'; color = '#a16207'; }
+                                else if (rank <= 10)   { bg = '#ffedd5'; color = '#c2410c'; }
+                                else                   { bg = '#fee2e2'; color = '#b91c1c'; }
+                                return (
+                                  <span style={{ display: 'inline-block', minWidth: '3rem', textAlign: 'center', fontSize: '0.8125rem', fontWeight: 800, padding: '3px 10px', borderRadius: '8px', backgroundColor: bg, color }}>
+                                    {rank >= 999 ? 'N/F' : `#${rank}`}
+                                  </span>
+                                );
+                              };
+                              return (
+                                <div key={det.name} style={{ display: 'grid', gridTemplateColumns: '2rem 1fr 6rem 6rem 6rem 6rem', gap: 0, padding: '0.5rem 1rem', alignItems: 'center', borderBottom: '1px solid #f1f5f9', backgroundColor: idx % 2 === 0 ? 'white' : '#fafafa' }}>
+                                  <span style={{ fontSize: '0.75rem', color: '#94a3b8', fontWeight: 600 }}>{idx + 1}</span>
+                                  <span style={{ fontSize: '0.875rem', fontWeight: 700, textTransform: 'capitalize', color: '#0f172a' }}>{det.name}</span>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(tr, 'text')}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(Math.min(tr, 3) <= 3 ? 1 : tr, 'text')}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(ir, 'img')}</div>
+                                  <div style={{ display: 'flex', justifyContent: 'center' }}>{rankBadge(Math.min(ir, 3) <= 3 ? 1 : ir, 'img')}</div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       </div>
                     </>
