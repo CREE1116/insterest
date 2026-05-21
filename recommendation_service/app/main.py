@@ -75,7 +75,7 @@ async def startup_event():
     vector_store.create_index()
     logger.info("✅ Redis Index Ready")
 
-    # 2. 스마트 Backfill: DB 포스트 수 > Redis 벡터 수일 때만 실행
+    # 2. 스마트 Backfill: count 불일치 또는 image_vector 필드 누락 시 실행
     from app.services.intelligence import intel_service
     from app.db.session import AsyncSessionLocal
     try:
@@ -83,10 +83,15 @@ async def startup_event():
             res = await db.execute(text("SELECT COUNT(*) FROM search.post_vectors"))
             db_count = res.scalar() or 0
         redis_count = vector_store.count()
-        if redis_count < db_count:
-            logger.info(f"🔄 Redis ({redis_count}) < DB ({db_count}) — backfilling...")
-            # 세션을 태스크 안에서 생성 — create_task는 async with 블록 종료 후 실행되므로
-            # 외부 세션을 넘기면 이미 닫힌 세션을 사용해 에러 발생
+        # Count 불일치 외에 image_vector 필드 누락도 감지
+        needs_backfill = redis_count < db_count
+        if not needs_backfill and redis_count > 0:
+            sample_keys = list(vector_store.r.scan_iter("post:*", count=1))
+            if sample_keys and not vector_store.r.hexists(sample_keys[0], b"image_vector"):
+                logger.warning("⚠️ Sample post missing image_vector field — triggering backfill")
+                needs_backfill = True
+        if needs_backfill:
+            logger.info(f"🔄 Redis ({redis_count}) vs DB ({db_count}) — backfilling...")
             async def _backfill_task():
                 async with AsyncSessionLocal() as session:
                     await intel_service.backfill_all_posts(session)

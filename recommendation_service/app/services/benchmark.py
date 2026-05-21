@@ -368,6 +368,8 @@ class BenchmarkService:
 
             for idx, pil_img in enumerate(imgs):
                 img_bytes = self._cifar_img_to_bytes(pil_img)
+                caption = f"{class_name}, sample {idx + 1}"
+                hashtags = [class_name]
 
                 # Save image file for static serving (idempotent)
                 img_file = os.path.join(img_dir, f"{class_name}_{idx}.jpg")
@@ -379,13 +381,18 @@ class BenchmarkService:
                         logger.warning(f"Failed to save benchmark image {img_file}: {e}")
 
                 if idx in class_post_ids[class_name]:
-                    continue  # DB/Redis already exists — reuse
+                    # DB exists — verify Redis has image_vector; fix if missing
+                    existing_post_id = class_post_ids[class_name][idx]
+                    from app.ml.vector_store import vector_store as _vs
+                    if not _vs.r.hexists(f"post:{existing_post_id}", "image_vector"):
+                        logger.info(f"🔄 Re-indexing {class_name}[{idx}] (image_vector missing from Redis)")
+                        i_vec = F.normalize(nlp_embedder.embed_image(img_bytes).to(self.device), p=2, dim=-1).cpu().numpy()
+                        _vs.r.hset(f"post:{existing_post_id}", mapping={"image_vector": i_vec.astype(np.float32).tobytes()})
+                    continue
 
                 post_id = uuid.uuid4()
                 content_id = uuid.uuid4()
                 media_id = uuid.uuid4()
-                caption = f"{class_name}, sample {idx + 1}"
-                hashtags = [class_name]
 
                 try:
                     await db.execute(text(
