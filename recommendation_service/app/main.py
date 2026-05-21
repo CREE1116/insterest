@@ -86,8 +86,8 @@ async def startup_event():
         # Count 불일치 외에 image_vector 필드 누락도 감지
         needs_backfill = redis_count < db_count
         if not needs_backfill and redis_count > 0:
-            sample_keys = list(vector_store.r.scan_iter("post:*", count=1))
-            if sample_keys and not vector_store.r.hexists(sample_keys[0], b"image_vector"):
+            sample_key = next(vector_store.r.scan_iter("post:*", count=10), None)
+            if sample_key and not vector_store.r.hexists(sample_key, b"image_vector"):
                 logger.warning("⚠️ Sample post missing image_vector field — triggering backfill")
                 needs_backfill = True
         if needs_backfill:
