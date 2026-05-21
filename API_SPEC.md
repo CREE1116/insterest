@@ -1,4 +1,4 @@
-# Insterest API Specification
+# Insterest API Specification <!-- updated -->
 
 마이크로서비스별 API 명세입니다. 모든 요청은 Nginx Ingress(`http://localhost`)를 통해 라우팅되며, 서비스 내부 포트는 참고용입니다.
 
