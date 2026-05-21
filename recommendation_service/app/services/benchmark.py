@@ -394,6 +394,20 @@ class BenchmarkService:
                         _vs.r.hset(f"post:{existing_post_id}", mapping={"image_vector": i_vec.astype(np.float32).tobytes()})
                     continue
 
+                # Race-condition guard: re-check DB right before insert
+                dup_check = await db.execute(text("""
+                    SELECT p.id FROM upload.post p
+                    JOIN upload.content c ON c.id = p.content_id
+                    WHERE p.user_id = :uid AND p.is_deleted = FALSE
+                      AND (c.metadata::jsonb->>'animal_name') = :cls
+                      AND (c.metadata::jsonb->>'sample_idx')::int = :sidx
+                    LIMIT 1
+                """), {"uid": system_user_id, "cls": class_name, "sidx": idx})
+                existing_row = dup_check.first()
+                if existing_row:
+                    class_post_ids[class_name][idx] = existing_row[0]
+                    continue
+
                 post_id = uuid.uuid4()
                 content_id = uuid.uuid4()
                 media_id = uuid.uuid4()
