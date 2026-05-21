@@ -311,15 +311,19 @@ class BenchmarkService:
         except Exception as e:
             logger.warning(f"System user upsert: {e}")
 
-        # Load existing benchmark posts from DB
+        # Load existing benchmark posts from DB.
+        # Query upload.content directly (no JOIN on post_vectors) so posts whose
+        # vector indexing previously failed are still detected as existing and not
+        # re-inserted as duplicates.
         existing: Dict[str, Dict[int, uuid.UUID]] = {}
         try:
             res = await db.execute(text("""
-                SELECT p.id, pv.content_text
+                SELECT p.id, c.metadata::jsonb
                 FROM upload.post p
-                JOIN search.post_vectors pv ON pv.post_id = p.id
+                JOIN upload.content c ON c.id = p.content_id
                 WHERE p.user_id = :uid
-                  AND (pv.content_text->>'is_animal_benchmark')::boolean = true
+                  AND p.is_deleted = FALSE
+                  AND (c.metadata::jsonb->>'is_animal_benchmark')::boolean = true
             """), {"uid": system_user_id})
             for row in res.all():
                 pid, meta = row
