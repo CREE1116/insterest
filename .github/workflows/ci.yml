@@ -18,6 +18,11 @@ on:
       - '.github/workflows/**'
   workflow_dispatch:
 
+# Issues 쓰기 권한 명시 (테스트 실패 시 이슈 생성에 필요)
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   # ── 1. 테스트 ────────────────────────────────────────────────────────────────
   test:
