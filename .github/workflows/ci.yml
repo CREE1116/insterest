@@ -1,4 +1,4 @@
-name: Build and Push to Docker Hub
+name: CI
 
 on:
   push:
@@ -16,27 +16,109 @@ on:
       - 'console_frontend/**'
       - 'infra/k8s/**'
       - '.github/workflows/**'
-  workflow_dispatch: # 수동 실행 버튼 추가
+  workflow_dispatch:
 
 jobs:
-  build-and-push:
+  # ── 1. 테스트 ────────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.service.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         service:
-          - { name: 'auth-service', path: 'auth_service' }
-          - { name: 'upload-service', path: 'upload_service' }
-          - { name: 'generation-service', path: 'generation_service' }
-          - { name: 'interaction-service', path: 'interaction_service' }
-          - { name: 'comment-service', path: 'comment_service' }
-          - { name: 'user-service', path: 'user_service' }
-          - { name: 'recommendation-service', path: 'recommendation_service' }
-          - { name: 'frontend', path: 'frontend' }
-          - { name: 'console-frontend', path: 'console_frontend' }
+          - name: auth-service
+            path: auth_service
+            install: pip install -e ".[test]"
+          - name: interaction-service
+            path: interaction_service
+            install: pip install -e ".[test]"
+          - name: comment-service
+            path: comment_service
+            install: pip install -e ".[test]"
+          - name: upload-service
+            path: upload_service
+            install: pip install -e ".[test]"
+          - name: recommendation-service
+            path: recommendation_service
+            install: pip install pytest pytest-asyncio
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Check if service changed
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            changed:
+              - '${{ matrix.service.path }}/**'
+
+      - name: Set up Python 3.12
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.changed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.changed == 'true'
+        working-directory: ${{ matrix.service.path }}
+        run: ${{ matrix.service.install }}
+
+      - name: Run tests
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.changed == 'true'
+        working-directory: ${{ matrix.service.path }}
+        env:
+          POSTGRES_SERVER: localhost
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+          SECRET_KEY: test-secret-key-for-ci
+        run: pytest tests/ -v --tb=short
+
+      - name: Open issue on test failure
+        if: failure() && (github.event_name == 'workflow_dispatch' || steps.filter.outputs.changed == 'true')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `🚨 CI Test Failed: ${{ matrix.service.name }} (${context.sha.slice(0,7)})`;
+            const body = [
+              `**서비스**: \`${{ matrix.service.name }}\``,
+              `**커밋**: [\`${context.sha.slice(0,7)}\`](https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha})`,
+              `**워크플로우**: [실행 보기](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              ``,
+              `테스트가 실패했습니다. 위 워크플로우 링크에서 로그를 확인하세요.`,
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['bug', 'ci-failure'],
+            });
+
+  # ── 2. 빌드 & 푸시 ───────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build (${{ matrix.service.name }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - { name: 'auth-service',           path: 'auth_service' }
+          - { name: 'upload-service',          path: 'upload_service' }
+          - { name: 'generation-service',      path: 'generation_service' }
+          - { name: 'interaction-service',     path: 'interaction_service' }
+          - { name: 'comment-service',         path: 'comment_service' }
+          - { name: 'user-service',            path: 'user_service' }
+          - { name: 'recommendation-service',  path: 'recommendation_service' }
+          - { name: 'frontend',                path: 'frontend' }
+          - { name: 'console-frontend',        path: 'console_frontend' }
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Check if service changed
         uses: dorny/paths-filter@v3
@@ -66,16 +148,19 @@ jobs:
           context: ./${{ matrix.service.path }}
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:latest, ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:${{ github.sha }}
           cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:buildcache
           cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service.name }}:buildcache,mode=max
 
+  # ── 3. Infra 업데이트 ─────────────────────────────────────────────────────────
   update-infra:
     if: always()
+    needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Check which services changed
         uses: dorny/paths-filter@v3
@@ -103,8 +188,6 @@ jobs:
         run: |
           mkdir -p infra-repo/k8s
 
-          # Copy non-deployment manifests (Services, PVCs, Ingress, CronJobs, etc.)
-          # Deployment files are managed separately to preserve existing SHA image tags
           find infra/k8s -type f -name "*.yaml" | while read f; do
             rel="${f#infra/k8s/}"
             dest="infra-repo/k8s/$rel"
@@ -112,21 +195,17 @@ jobs:
             if [[ "$(basename "$f")" != deployment*.yaml ]]; then
               cp "$f" "$dest"
             elif [ ! -f "$dest" ]; then
-              # New deployment file not yet in infra-repo: copy as-is
               cp "$f" "$dest"
             fi
           done
 
           cd infra-repo
 
-          # Get the list of changed services
           CHANGES='${{ steps.filter.outputs.changes }}'
           echo "Changes detected: $CHANGES"
 
           SERVICES=("auth-service" "upload-service" "generation-service" "interaction-service" "comment-service" "user-service" "recommendation-service" "frontend" "console-frontend")
 
-          # Repair: fix any deployment that has the wrong image name due to old sed bug
-          # (e.g. console-frontend deployment pointing to 'frontend' image instead of 'console-frontend')
           if [ -f k8s/console/deployment.yaml ]; then
             sed -i -E "s|image: ${{ secrets.DOCKERHUB_USERNAME }}/frontend:[a-zA-Z0-9._-]+|image: ${{ secrets.DOCKERHUB_USERNAME }}/console-frontend:latest|g" k8s/console/deployment.yaml
           fi
@@ -139,11 +218,11 @@ jobs:
               find . -type f -name "deployment*.yaml" -exec sed -i -E "s|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:[a-zA-Z0-9._-]+|image: ${{ secrets.DOCKERHUB_USERNAME }}/$service:${{ github.sha }}|g" {} +
             fi
           done
-          
+
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           git add .
-          
+
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
