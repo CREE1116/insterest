@@ -16,6 +16,21 @@ on:
       - 'console_frontend/**'
       - 'infra/k8s/**'
       - '.github/workflows/**'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'auth_service/**'
+      - 'upload_service/**'
+      - 'generation_service/**'
+      - 'interaction_service/**'
+      - 'comment_service/**'
+      - 'user_service/**'
+      - 'recommendation_service/**'
+      - 'frontend/**'
+      - 'console_frontend/**'
+      - 'infra/k8s/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 # Issues 쓰기 권한 명시 (테스트 실패 시 이슈 생성에 필요)
