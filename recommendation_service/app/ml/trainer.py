@@ -7,13 +7,10 @@ from app.ml.model import UnifiedDiscoveryModel
 
 logger = logging.getLogger(__name__)
 
-
 class UnifiedDiscoveryTrainer:
     """
-    Single-phase trainer: UserTower only.
-    Item representations are fixed CLIP vectors — no projection training needed.
-
-    Phase 2 (InfoNCE): given user history of item vecs → predict next item vec.
+    SBERT-Guided Bidirectional Soft CLIP Loss Trainer.
+    Optimizes projection layers (text_proj, image_proj, fusion_mlp).
     """
     def __init__(self, model: UnifiedDiscoveryModel, learning_rate: float = 1e-4,
                  device: str = "cpu", temperature: float = 0.07):
@@ -23,56 +20,72 @@ class UnifiedDiscoveryTrainer:
         self.criterion = nn.CrossEntropyLoss()
         self.model.to(self.device)
 
+        # Optimize trainable parameters in the model (projection layers)
         self.optimizer = optim.Adam(
-            list(model.user_tower.parameters()),
+            [p for p in model.parameters() if p.requires_grad],
             lr=learning_rate, weight_decay=1e-5
         )
 
-    def info_nce_loss(self, query_vecs: torch.Tensor, item_vecs: torch.Tensor) -> torch.Tensor:
-        """InfoNCE: query i must be nearest item i; all other rows are negatives.
-
-        item_vecs may contain extra hard negatives appended after the B positives.
-        Labels still point to diagonal (0..B-1).
-        """
-        logits = torch.matmul(query_vecs, item_vecs.T) / self.temperature
-        labels = torch.arange(query_vecs.size(0), device=query_vecs.device)
-        return self.criterion(logits, labels)
-
     def train_step(
         self,
-        user_histories: torch.Tensor,            # [B, 10, 512]
-        target_item_vecs: torch.Tensor,          # [B, 512]
-        query_clip_vecs: torch.Tensor,           # [B, 512]
-        extra_negatives: torch.Tensor = None,    # [M, 512] hard negatives from full item pool
+        user_histories: torch.Tensor,            # [B, 10, 128]
+        target_item_vecs: torch.Tensor,          # [B, 128]
+        query_sbert_vecs: torch.Tensor,          # [B, 768] SBERT query
+        extra_negatives: torch.Tensor = None,    # [M, 128] hard negatives
     ) -> float:
-        """
-        UserTower InfoNCE with optional hard negatives.
-
-        Hard negatives (extra_negatives) are appended to the key matrix so the model
-        must distinguish the true positive from pool-level lookalikes — not just
-        random in-batch items.
-        50% query masking forces the user tower to work without an explicit query.
-        """
         self.model.train()
         self.optimizer.zero_grad()
 
-        user_vecs = self.model.get_user_embedding(user_histories)           # [B, 512]
+        user_vecs = self.model.get_user_embedding(user_histories)           # [B, 128]
 
         # 50% query masking: forces user tower to work independently of query
         mask = (torch.rand(user_histories.size(0), 1, device=self.device) > 0.5).float()
-        masked_query = query_clip_vecs * mask
-        query_vecs = self.model.get_query_embedding(masked_query)           # [B, 512]
+        masked_query = query_sbert_vecs * mask
+        query_vecs = self.model.get_query_embedding(masked_query)           # [B, 128]
 
-        discovery_vecs = self.model.discovery(query_vecs, user_vecs)       # [B, 512]
+        discovery_vecs = self.model.discovery(query_vecs, user_vecs)       # [B, 128]
 
-        # Append hard negatives to the key matrix (labels still point to diagonal)
         if extra_negatives is not None and extra_negatives.size(0) > 0:
             key_vecs = torch.cat([target_item_vecs, extra_negatives.detach()], dim=0)
         else:
             key_vecs = target_item_vecs
 
-        loss = self.info_nce_loss(discovery_vecs, key_vecs)
+        # SBERT-Guided Bidirectional Soft CLIP Loss
+        # 1. Compute SBERT similarity matrix for query batch
+        norm_sbert = F.normalize(query_sbert_vecs, p=2, dim=-1) # [B, 768]
+        sbert_sim = torch.matmul(norm_sbert, norm_sbert.T) # [B, B]
+        
+        # Target distribution (soft labels)
+        soft_labels = F.softmax(sbert_sim / self.temperature, dim=-1) # [B, B]
+
+        # 2. Logits for u2i (user to item)
+        logits_u2i = torch.matmul(discovery_vecs, key_vecs.T) / self.temperature # [B, B + M]
+        
+        if key_vecs.size(0) > discovery_vecs.size(0):
+            num_negs = key_vecs.size(0) - discovery_vecs.size(0)
+            zero_padding = torch.zeros(discovery_vecs.size(0), num_negs, device=discovery_vecs.device)
+            soft_labels_u2i = torch.cat([soft_labels, zero_padding], dim=-1)
+        else:
+            soft_labels_u2i = soft_labels
+
+        log_prob_u2i = F.log_softmax(logits_u2i, dim=-1)
+        loss_u2i = F.kl_div(log_prob_u2i, soft_labels_u2i, reduction='batchmean')
+
+        # 3. Logits for i2u (item to user) - only on positive batch elements
+        logits_i2u = torch.matmul(target_item_vecs, discovery_vecs.T) / self.temperature # [B, B]
+        log_prob_i2u = F.log_softmax(logits_i2u, dim=-1)
+        loss_i2u = F.kl_div(log_prob_i2u, soft_labels, reduction='batchmean')
+
+        loss = (loss_u2i + loss_i2u) / 2.0
+
         loss.backward()
+
+        # Scale text projection update gradients by 0.2 to prevent semantic drift
+        if hasattr(self.model, "text_proj") and self.model.text_proj.weight.grad is not None:
+            self.model.text_proj.weight.grad.data.mul_(0.2)
+        if hasattr(self.model, "text_proj") and self.model.text_proj.bias.grad is not None:
+            self.model.text_proj.bias.grad.data.mul_(0.2)
+
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.optimizer.step()
         return loss.item()

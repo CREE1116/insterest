@@ -1,4 +1,5 @@
 import io
+import asyncio
 import json
 import os
 import random
@@ -341,7 +342,7 @@ class BenchmarkService:
 
         if per_class is None:
             logger.info("📥 Loading CIFAR-100 dataset...")
-            per_class = self._load_cifar100_samples()
+            per_class = await asyncio.to_thread(self._load_cifar100_samples)
 
         from app.services.intelligence import intel_service
         class_post_ids: Dict[str, Dict[int, uuid.UUID]] = {k: dict(v) for k, v in existing.items()}
@@ -371,7 +372,7 @@ class BenchmarkService:
                 hashtag_id = None
 
             for idx, pil_img in enumerate(imgs):
-                img_bytes = self._cifar_img_to_bytes(pil_img)
+                img_bytes = await asyncio.to_thread(self._cifar_img_to_bytes, pil_img)
                 caption = f"{class_name}, sample {idx + 1}"
                 hashtags = [class_name]
 
@@ -510,7 +511,7 @@ class BenchmarkService:
     async def run_animal_db_benchmark(self, db) -> Dict[str, Any]:
         """CIFAR-100 실제 이미지로 크로스모달 검색 정확도 벤치마크. 데이터는 유지된다."""
         logger.info("📥 Loading CIFAR-100 dataset...")
-        per_class = self._load_cifar100_samples()
+        per_class = await asyncio.to_thread(self._load_cifar100_samples)
         class_post_ids = await self.inject_cifar_dataset(db, per_class=per_class)
         all_post_ids = {pid for pids in class_post_ids.values() for pid in pids.values()}
         if len(all_post_ids) < 10:
@@ -550,7 +551,7 @@ class BenchmarkService:
             # Image→Image: first sample → find other samples of same class
             best_image_rank = 999
             if 0 in idx_to_pid and per_class.get(class_name):
-                img_bytes = self._cifar_img_to_bytes(per_class[class_name][0])
+                img_bytes = await asyncio.to_thread(self._cifar_img_to_bytes, per_class[class_name][0])
                 img_results = await intel_service.discover_by_image(
                     db=db, image_bytes=img_bytes, limit=search_limit, use_personalization=False
                 )

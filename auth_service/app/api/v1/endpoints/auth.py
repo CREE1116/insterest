@@ -41,6 +41,7 @@ async def register_user(
         nickname=user_in.nickname,
         is_active=True,
         is_verified=False,
+        is_superuser=False,
     )
     db.add(db_obj)
     await db.commit()

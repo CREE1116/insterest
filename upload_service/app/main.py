@@ -94,6 +94,10 @@ async def startup():
 
 app.include_router(api_router, prefix=f"{settings.API_V1_STR}/upload")
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 # 404 Debugging Catch-all
 @app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def catch_all(request: Request, path_name: str):
@@ -108,9 +112,9 @@ async def catch_all(request: Request, path_name: str):
         }
     )
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
+
+
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -25,7 +25,7 @@ async def client():
         async def __aexit__(self, *a):
             pass
 
-    with patch.object(engine, "begin", return_value=_FakeCtx()), \
+    with patch("sqlalchemy.ext.asyncio.AsyncEngine.begin", return_value=_FakeCtx()), \
          patch("app.main.consume_generation_completed", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
