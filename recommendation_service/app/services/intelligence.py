@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 import time
 import uuid
 import random
@@ -112,7 +113,8 @@ class UnifiedIntelligenceService:
                     user_vec = await asyncio.to_thread(_get_user_vector)
 
             if user_vec is not None:
-                user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector")
+                # E. ef_runtime=400 for personalization (high-recall mode)
+                user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector", ef_runtime=400)
                 rank_lists.append([str(pid) for pid in user_ids])
 
             # 3. Item-item Jaccard CF
@@ -121,29 +123,41 @@ class UnifiedIntelligenceService:
                 if cf_ids:
                     rank_lists.append(cf_ids)
 
-            # RRF merge
+            # A. Adaptive RRF merge
+            # When user has history (personalization), double-weight personalization lists.
+            # When no personalization available, all lists contribute equally.
             if rank_lists:
                 rrf_scores: Dict[str, float] = {}
                 k_rrf = 60
-                for r_list in rank_lists:
+                # rank_lists layout: [user_vec_list, cf_list] (no query_text in this branch)
+                # Boost personalization signal when history is rich
+                personalization_boost = 2.0 if user_vec is not None else 1.0
+                for list_idx, r_list in enumerate(rank_lists):
+                    # list_idx==0 → user-tower search (personalization)
+                    # list_idx==1 → CF candidates
+                    weight = personalization_boost if list_idx == 0 else 1.0
                     for rank, pid in enumerate(r_list):
                         if pid in exclude_set:
                             continue
-                        rrf_scores[pid] = rrf_scores.get(pid, 0.0) + 1.0 / (k_rrf + (rank + 1))
+                        rrf_scores[pid] = rrf_scores.get(pid, 0.0) + weight / (k_rrf + (rank + 1))
 
                 sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
                 needed = skip + limit - len(sorted_items)
                 if needed > 0:
                     existing_ids = {pid for pid, _ in sorted_items} | exclude_set
+                    # B. Trending fallback: popularity × exp(-λ × hours_since_upload)
                     pad_stmt = text("""
                         SELECT p.id FROM upload.post p
                         LEFT JOIN (
                             SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
                         ) lc ON lc.post_id = p.id
                         WHERE p.is_deleted = FALSE
-                        ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
-                                 p.created_at DESC
+                        ORDER BY
+                            COALESCE(lc.cnt, 0) * EXP(-0.01 *
+                                EXTRACT(EPOCH FROM (NOW() - p.created_at)) / 3600.0
+                            ) DESC,
+                            p.created_at DESC
                         LIMIT :lim
                     """)
                     pad_res = await db.execute(pad_stmt, {"lim": needed + len(existing_ids) + 20})
@@ -156,15 +170,18 @@ class UnifiedIntelligenceService:
                 page = sorted_items[skip: skip + limit]
                 return [{"id": pid, "score": float(score)} for pid, score in page]
 
-            # Fallback trending
+            # B. Cold-start fallback trending: popularity × exp(-λ × hours_since_upload)
             stmt = text("""
                 SELECT p.id FROM upload.post p
                 LEFT JOIN (
                     SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
                 ) lc ON lc.post_id = p.id
                 WHERE p.is_deleted = FALSE
-                ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
-                         p.created_at DESC
+                ORDER BY
+                    COALESCE(lc.cnt, 0) * EXP(-0.01 *
+                        EXTRACT(EPOCH FROM (NOW() - p.created_at)) / 3600.0
+                    ) DESC,
+                    p.created_at DESC
                 LIMIT :l OFFSET :s
             """)
             res = await db.execute(stmt, {"l": limit, "s": skip})
@@ -253,29 +270,37 @@ class UnifiedIntelligenceService:
                 user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector")
                 rank_lists.append([str(pid) for pid in user_ids])
 
-            # RRF 병합
+            # A. Adaptive RRF merge for image search
+            # rank_lists layout: [image_list, user_personalization_list]
+            # Image search gets 1.0 weight; personalization gets 2.0 if available.
             exclude_set = set(str(i) for i in (exclude_history_ids or []))
             rrf_scores: Dict[str, float] = {}
             k_rrf = 60
-            for r_list in rank_lists:
+            for list_idx, r_list in enumerate(rank_lists):
+                # list_idx==0 → image search, list_idx==1 → user personalization
+                weight = 2.0 if (list_idx == 1 and user_vec is not None) else 1.0
                 for rank, pid in enumerate(r_list):
                     if pid in exclude_set:
                         continue
-                    rrf_scores[pid] = rrf_scores.get(pid, 0.0) + 1.0 / (k_rrf + (rank + 1))
+                    rrf_scores[pid] = rrf_scores.get(pid, 0.0) + weight / (k_rrf + (rank + 1))
 
             sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
             needed = skip + limit - len(sorted_items)
             if needed > 0:
                 existing_ids = {pid for pid, _ in sorted_items} | exclude_set
+                # B. Trending fallback: popularity × exp(-λ × hours_since_upload)
                 pad_stmt = text("""
                     SELECT p.id FROM upload.post p
                     LEFT JOIN (
                         SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
                     ) lc ON lc.post_id = p.id
                     WHERE p.is_deleted = FALSE
-                    ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
-                             p.created_at DESC
+                    ORDER BY
+                        COALESCE(lc.cnt, 0) * EXP(-0.01 *
+                            EXTRACT(EPOCH FROM (NOW() - p.created_at)) / 3600.0
+                        ) DESC,
+                        p.created_at DESC
                     LIMIT :lim
                 """)
                 pad_res = await db.execute(pad_stmt, {"lim": needed + len(existing_ids) + 20})
@@ -296,8 +321,11 @@ class UnifiedIntelligenceService:
                     SELECT post_id, COUNT(*) AS cnt FROM interaction.likes GROUP BY post_id
                 ) lc ON lc.post_id = p.id
                 WHERE p.is_deleted = FALSE
-                ORDER BY COALESCE(lc.cnt, 0) * 0.7 + COALESCE(p.view_count, 0) * 0.3 DESC,
-                         p.created_at DESC
+                ORDER BY
+                    COALESCE(lc.cnt, 0) * EXP(-0.01 *
+                        EXTRACT(EPOCH FROM (NOW() - p.created_at)) / 3600.0
+                    ) DESC,
+                    p.created_at DESC
                 LIMIT :l OFFSET :s
             """)
             res = await db.execute(stmt, {"l": limit, "s": skip})
