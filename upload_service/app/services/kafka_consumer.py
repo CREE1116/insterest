@@ -65,72 +65,72 @@ async def consume_generation_completed():
                     fetch_file_data(client, music_url)
                 )
 
-            if not image_data or not music_data:
-                logger.error("❌ Failed to download media data, skipping.")
-                continue
+                if not image_data or not music_data:
+                    logger.error("❌ Failed to download media data, skipping.")
+                    continue
 
-            try:
-                # 2. 로컬 파일 시스템(/uploads)에 저장하여 영구 보관
-                image_filename = f"ai_img_{uuid.uuid4()}.png"
-                music_filename = f"ai_aud_{uuid.uuid4()}.wav"
+                try:
+                    # 2. 로컬 파일 시스템(/uploads)에 저장하여 영구 보관
+                    image_filename = f"ai_img_{uuid.uuid4()}.png"
+                    music_filename = f"ai_aud_{uuid.uuid4()}.wav"
                 
-                image_path = os.path.join(settings.UPLOAD_DIR, image_filename)
-                music_path = os.path.join(settings.UPLOAD_DIR, music_filename)
+                    image_path = os.path.join(settings.UPLOAD_DIR, image_filename)
+                    music_path = os.path.join(settings.UPLOAD_DIR, music_filename)
                 
-                async with aiofiles.open(image_path, "wb") as f:
-                    await f.write(image_data)
-                async with aiofiles.open(music_path, "wb") as f:
-                    await f.write(music_data)
+                    async with aiofiles.open(image_path, "wb") as f:
+                        await f.write(image_data)
+                    async with aiofiles.open(music_path, "wb") as f:
+                        await f.write(music_data)
 
-                async with SessionLocal() as db:
-                    user_id_str = data.get("user_id")
-                    user_id = uuid.UUID(user_id_str) if isinstance(user_id_str, str) else user_id_str
-                    content_id = uuid.uuid4()
+                    async with SessionLocal() as db:
+                        user_id_str = data.get("user_id")
+                        user_id = uuid.UUID(user_id_str) if isinstance(user_id_str, str) else user_id_str
+                        content_id = uuid.uuid4()
                     
-                    # 3. Content 생성 (그릇)
-                    content = Content(
-                        id=content_id,
-                        user_id=user_id,
-                        content_type=ContentType.PHOTO_SOUND,
-                        is_ai=True,
-                        metadata_info={
-                            "title": data.get("title"),
-                            "mood": data.get("mood"),
-                            "ai_generated": True
-                        }
-                    )
-                    db.add(content)
+                        # 3. Content 생성 (그릇)
+                        content = Content(
+                            id=content_id,
+                            user_id=user_id,
+                            content_type=ContentType.PHOTO_SOUND,
+                            is_ai=True,
+                            metadata_info={
+                                "title": data.get("title"),
+                                "mood": data.get("mood"),
+                                "ai_generated": True
+                            }
+                        )
+                        db.add(content)
                     
-                    # 4. Media 생성 (DB에는 경로만 저장, file_data는 제거)
-                    db.add(Media(
-                        user_id=user_id,
-                        content_id=content_id,
-                        type=MediaType.IMAGE,
-                        url=f"/uploads/{image_filename}",
-                        metadata_info={"original_filename": data.get("title")}
-                    ))
-                    db.add(Media(
-                        user_id=user_id,
-                        content_id=content_id,
-                        type=MediaType.AUDIO,
-                        url=f"/uploads/{music_filename}",
-                        metadata_info={"original_filename": data.get("title")}
-                    ))
+                        # 4. Media 생성 (DB에는 경로만 저장, file_data는 제거)
+                        db.add(Media(
+                            user_id=user_id,
+                            content_id=content_id,
+                            type=MediaType.IMAGE,
+                            url=f"/uploads/{image_filename}",
+                            metadata_info={"original_filename": data.get("title")}
+                        ))
+                        db.add(Media(
+                            user_id=user_id,
+                            content_id=content_id,
+                            type=MediaType.AUDIO,
+                            url=f"/uploads/{music_filename}",
+                            metadata_info={"original_filename": data.get("title")}
+                        ))
                     
-                    # 5. GenerationMeta 생성 (프롬프트 기록)
-                    db.add(GenerationMeta(
-                        content_id=content_id,
-                        user_id=user_id,
-                        image_prompt=data.get("image_prompt"),
-                        audio_prompt=data.get("music_prompt"),
-                        model="MusicGen/Flux"
-                    ))
+                        # 5. GenerationMeta 생성 (프롬프트 기록)
+                        db.add(GenerationMeta(
+                            content_id=content_id,
+                            user_id=user_id,
+                            image_prompt=data.get("image_prompt"),
+                            audio_prompt=data.get("music_prompt"),
+                            model="MusicGen/Flux"
+                        ))
                     
-                    await db.commit()
-                    logger.info(f"✅ Successfully persisted AI content to /uploads and DB: {content_id}")
+                        await db.commit()
+                        logger.info(f"✅ Successfully persisted AI content to /uploads and DB: {content_id}")
                     
-            except Exception as e:
-                logger.error(f"❌ Error during persistence: {e}")
+                except Exception as e:
+                    logger.error(f"❌ Error during persistence: {e}")
                 
     except Exception as e:
         logger.error(f"❌ Consumer loop error: {e}")
