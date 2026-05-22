@@ -47,8 +47,9 @@ def test_info_nce_random_baseline():
 
 def test_gradient_flows():
     B = 4
-    q = torch.nn.functional.normalize(torch.randn(B, 512, requires_grad=True), p=2, dim=-1)
+    q_raw = torch.randn(B, 512, requires_grad=True)
+    q = torch.nn.functional.normalize(q_raw, p=2, dim=-1)
     k = torch.nn.functional.normalize(torch.randn(B, 512), p=2, dim=-1)
     loss = _info_nce(q, k)
     loss.backward()
-    assert q.grad is not None
+    assert q_raw.grad is not None

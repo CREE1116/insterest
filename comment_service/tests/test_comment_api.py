@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 async def test_health(client):
@@ -17,7 +17,7 @@ async def test_create_comment_success(client, mock_db, auth_headers):
     mock_comment.content = "test comment"
     mock_comment.created_at = datetime.now(timezone.utc)
     mock_comment.updated_at = datetime.now(timezone.utc)
-    mock_db.refresh = MagicMock(return_value=None)
+    mock_db.refresh = AsyncMock(return_value=None)
 
     # After db.add + commit, refresh populates the object
     # The endpoint returns the new_comment object — we patch it via mock_db side effects
