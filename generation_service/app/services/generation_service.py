@@ -1,4 +1,5 @@
 import asyncio
+import aiofiles
 import os
 import uuid
 import logging
@@ -43,8 +44,8 @@ class ContentGenerator:
                 is_html = b"<!DOCTYPE" in res.content[:100] or b"<html" in res.content[:100]
                 
                 if res.status_code == 200 and "image" in content_type and not is_html:
-                    with open(filepath, "wb") as f:
-                        f.write(res.content)
+                    async with aiofiles.open(filepath, "wb") as f:
+                        await f.write(res.content)
                     return f"/outputs/{filename}"
                 else:
                     raise Exception(f"Image generation failed: {res.status_code}")
@@ -74,8 +75,8 @@ class ContentGenerator:
                 response = await client.get(url, headers=headers)
                 
                 if response.status_code == 200:
-                    with open(filepath, "wb") as f:
-                        f.write(response.content)
+                    async with aiofiles.open(filepath, "wb") as f:
+                        await f.write(response.content)
                     logger.info(f"✅ Music generated successfully: {filename}")
                     return f"/outputs/{filename}"
                 else:

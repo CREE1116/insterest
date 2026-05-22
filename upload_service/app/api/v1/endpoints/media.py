@@ -1,4 +1,5 @@
 import os
+import asyncio
 import aiofiles
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,9 +36,9 @@ async def reset_database():
             file_path = os.path.join(settings.UPLOAD_DIR, filename)
             try:
                 if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
+                    await asyncio.to_thread(os.unlink, file_path)
                 elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
+                    await asyncio.to_thread(shutil.rmtree, file_path)
             except: pass
                 
     return {"status": "success", "message": "Database and files reset successfully"}
@@ -104,17 +105,18 @@ async def upload_combined(
                 if audio_format == "m4a": audio_format = "mp4" # pydub m4a 지원 대응
                 
                 try:
-                    # pydub으로 오디오 로드 및 트리밍
-                    audio_segment = AudioSegment.from_file(io.BytesIO(audio_content), format=audio_format)
-                    
-                    start_ms = int(start_time * 1000)
-                    end_ms = start_ms + 10000 # 10초
-                    trimmed_audio = audio_segment[start_ms:end_ms]
-                    
-                    # 자른 오디오 저장 (MP3 포맷 권장)
+                    # pydub으로 오디오 로드 및 트리밍 (asyncio.to_thread)
                     audio_name = f"{uuid.uuid4()}.mp3"
                     audio_path = os.path.join(settings.UPLOAD_DIR, audio_name)
-                    trimmed_audio.export(audio_path, format="mp3", bitrate="128k")
+                    
+                    def _process_audio_sync():
+                        audio_segment = AudioSegment.from_file(io.BytesIO(audio_content), format=audio_format)
+                        start_ms = int(start_time * 1000)
+                        end_ms = start_ms + 10000 # 10초
+                        trimmed_audio = audio_segment[start_ms:end_ms]
+                        trimmed_audio.export(audio_path, format="mp3", bitrate="128k")
+                        
+                    await asyncio.to_thread(_process_audio_sync)
                         
                     new_audio = Media(
                         user_id=current_user_id,

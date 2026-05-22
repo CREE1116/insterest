@@ -13,22 +13,21 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-async def fetch_file_data(url: str) -> bytes:
+async def fetch_file_data(client: httpx.AsyncClient, url: str) -> bytes:
     """Generation Service로부터 실제 파일 데이터를 가져옵니다."""
     # 만약 url이 '/outputs/...'로 시작한다면, generation-service의 8002 포트에서 가져와야 함
     full_url = f"{settings.GENERATION_SERVICE_URL}{url}" if url.startswith("/") else url
     logger.info(f"Fetching file data from: {full_url}")
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        try:
-            response = await client.get(full_url)
-            if response.status_code == 200:
-                return response.content
-            else:
-                logger.error(f"Failed to fetch file from {full_url}: Status {response.status_code}")
-                return None
-        except Exception as e:
-            logger.error(f"Error fetching file from {full_url}: {e}")
+    try:
+        response = await client.get(full_url)
+        if response.status_code == 200:
+            return response.content
+        else:
+            logger.error(f"Failed to fetch file from {full_url}: Status {response.status_code}")
             return None
+    except Exception as e:
+        logger.error(f"Error fetching file from {full_url}: {e}")
+        return None
 
 async def consume_generation_completed():
     """Kafka에서 생성 완료 메시지를 소비하여 파일 저장 및 DB 등록"""
@@ -51,19 +50,20 @@ async def consume_generation_completed():
         return
 
     try:
-        async for msg in consumer:
-            data = msg.value
-            logger.info(f"📥 Received AI content event: {data.get('title')}")
-            
-            image_url = data.get("image_url")
-            music_url = data.get("music_url")
-            
-            # 1. 파일 다운로드 (generation-service -> upload-service)
-            # image_url: /outputs/abc.png -> http://generation-service:8002/outputs/abc.png
-            image_data, music_data = await asyncio.gather(
-                fetch_file_data(image_url),
-                fetch_file_data(music_url)
-            )
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            async for msg in consumer:
+                data = msg.value
+                logger.info(f"📥 Received AI content event: {data.get('title')}")
+                
+                image_url = data.get("image_url")
+                music_url = data.get("music_url")
+                
+                # 1. 파일 다운로드 (generation-service -> upload-service)
+                # image_url: /outputs/abc.png -> http://generation-service:8002/outputs/abc.png
+                image_data, music_data = await asyncio.gather(
+                    fetch_file_data(client, image_url),
+                    fetch_file_data(client, music_url)
+                )
 
             if not image_data or not music_data:
                 logger.error("❌ Failed to download media data, skipping.")

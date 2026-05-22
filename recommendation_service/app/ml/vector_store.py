@@ -10,8 +10,9 @@ logger = logging.getLogger(__name__)
 class RedisVectorStore:
     """
     Dual HNSW index in Redis:
-    - vector: 512-dim CLIP unified text+image space
+    - vector: 128-dim projected unified space
     - text_vector: 768-dim SBERT semantic text space
+    - image_vector: 128-dim projected image space
     """
     def __init__(self):
         self.r = redis.Redis(host=settings.REDIS_HOST, port=settings.RECO_REDIS_PORT, decode_responses=False)
@@ -20,28 +21,34 @@ class RedisVectorStore:
     def create_index(self):
         """인덱스 생성. 이미 올바른 트리플 스키마로 존재하면 그대로 재사용."""
         try:
-            # text_vector 와 image_vector 필드가 있는지 확인하여 없는 경우 드롭 후 재생성
             try:
                 info = self.r.execute_command("FT.INFO", self.index_name)
-                # info is a list of key-value pairs
-                has_text_vector = False
-                has_image_vector = False
-                for x in info:
-                    if isinstance(x, bytes):
-                        if b"text_vector" in x:
-                            has_text_vector = True
-                        if b"image_vector" in x:
-                            has_image_vector = True
-                    elif isinstance(x, str):
-                        if "text_vector" in x:
-                            has_text_vector = True
-                        if "image_vector" in x:
-                            has_image_vector = True
-                if not has_text_vector or not has_image_vector:
-                    logger.warning("⚠️ Redis index doesn't contain 'text_vector' or 'image_vector'. Dropping to migrate to triple HNSW schema...")
+                info_dict = {}
+                for i in range(0, len(info) - 1, 2):
+                    k = info[i].decode('utf-8') if isinstance(info[i], bytes) else info[i]
+                    info_dict[k] = info[i+1]
+                
+                attributes = info_dict.get("attributes", [])
+                vector_dim = None
+                for attr in attributes:
+                    attr_dict = {}
+                    for j in range(0, len(attr) - 1, 2):
+                        ak = attr[j].decode('utf-8') if isinstance(attr[j], bytes) else attr[j]
+                        attr_dict[ak] = attr[j+1]
+                    ident = attr_dict.get("identifier")
+                    ident_str = ident.decode('utf-8') if isinstance(ident, bytes) else ident
+                    if ident_str == "vector":
+                        vector_dim = attr_dict.get("dim")
+                        if isinstance(vector_dim, bytes):
+                            vector_dim = int(vector_dim)
+                        elif isinstance(vector_dim, (str, int)):
+                            vector_dim = int(vector_dim)
+                
+                if vector_dim != 128:
+                    logger.warning(f"⚠️ Redis index doesn't have 128-dim (found {vector_dim}). Dropping to migrate...")
                     self.r.execute_command("FT.DROPINDEX", self.index_name)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Index check failed or not found: {e}")
 
             self.r.execute_command(
                 "FT.CREATE", self.index_name,
@@ -51,7 +58,7 @@ class RedisVectorStore:
                 "post_id", "TAG",
                 "vector", "VECTOR", "HNSW", "6",
                 "TYPE", "FLOAT32",
-                "DIM", "512",
+                "DIM", "128",
                 "DISTANCE_METRIC", "COSINE",
                 "text_vector", "VECTOR", "HNSW", "6",
                 "TYPE", "FLOAT32",
@@ -59,10 +66,10 @@ class RedisVectorStore:
                 "DISTANCE_METRIC", "COSINE",
                 "image_vector", "VECTOR", "HNSW", "6",
                 "TYPE", "FLOAT32",
-                "DIM", "512",
+                "DIM", "128",
                 "DISTANCE_METRIC", "COSINE",
             )
-            logger.info(f"✅ Created CLIP 512-dim & SBERT 768-dim Triple Redis HNSW Index: {self.index_name}")
+            logger.info(f"✅ Created CLIP 128-dim & SBERT 768-dim Triple Redis HNSW Index: {self.index_name}")
         except redis.exceptions.ResponseError as e:
             if "Index already exists" in str(e):
                 logger.info(f"✅ Redis index '{self.index_name}' already exists, reusing.")
@@ -82,7 +89,7 @@ class RedisVectorStore:
                         "post_id", "TAG",
                         "vector", "VECTOR", "HNSW", "6",
                         "TYPE", "FLOAT32",
-                        "DIM", "512",
+                        "DIM", "128",
                         "DISTANCE_METRIC", "COSINE",
                         "text_vector", "VECTOR", "HNSW", "6",
                         "TYPE", "FLOAT32",
@@ -90,7 +97,7 @@ class RedisVectorStore:
                         "DISTANCE_METRIC", "COSINE",
                         "image_vector", "VECTOR", "HNSW", "6",
                         "TYPE", "FLOAT32",
-                        "DIM", "512",
+                        "DIM", "128",
                         "DISTANCE_METRIC", "COSINE",
                     )
                     logger.info(f"✅ Recreated Redis index with triple HNSW schema: {self.index_name}")
@@ -111,8 +118,15 @@ class RedisVectorStore:
 
     def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray, text_vector: np.ndarray = None, metadata: Dict[str, Any] = None, image_vector: np.ndarray = None):
         """
-        CLIP 512차원 벡터, SBERT 768차원 벡터 및 메타데이터를 Redis에 저장
+        128-dim projected vector, SBERT 768-dim vector, and metadata stored in Redis
         """
+        if vector is not None:
+            assert vector.shape[-1] == 128, f"Expected vector dimension 128, got {vector.shape[-1]}"
+        if image_vector is not None:
+            assert image_vector.shape[-1] == 128, f"Expected image_vector dimension 128, got {image_vector.shape[-1]}"
+        if text_vector is not None:
+            assert text_vector.shape[-1] == 768, f"Expected text_vector dimension 768, got {text_vector.shape[-1]}"
+
         key = f"post:{post_id}"
         vector_bytes = vector.astype(np.float32).tobytes()
         
@@ -136,7 +150,7 @@ class RedisVectorStore:
 
     def search_knn(self, query_vec: np.ndarray, k: int = 50, vector_field: str = "vector") -> List[uuid.UUID]:
         """
-        K-Nearest Neighbors Search using COSINE similarity on a specified vector field ('vector' or 'text_vector')
+        K-Nearest Neighbors Search using COSINE similarity on a specified vector field
         """
         query_vec_bytes = query_vec.astype(np.float32).tobytes()
         
