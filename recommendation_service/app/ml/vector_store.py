@@ -148,17 +148,22 @@ class RedisVectorStore:
                     
         self.r.hset(key, mapping=mapping)
 
-    def search_knn(self, query_vec: np.ndarray, k: int = 50, vector_field: str = "vector") -> List[uuid.UUID]:
+    def search_knn(self, query_vec: np.ndarray, k: int = 50, vector_field: str = "vector",
+                   ef_runtime: int = 200) -> List[uuid.UUID]:
         """
-        K-Nearest Neighbors Search using COSINE similarity on a specified vector field
+        K-Nearest Neighbors Search using COSINE similarity on a specified vector field.
+
+        ef_runtime: HNSW exploration factor at query time.
+            Higher → better recall, slightly higher latency.
+            Recommended: 200 (default, balanced), 400 (high-recall personalization).
         """
         query_vec_bytes = query_vec.astype(np.float32).tobytes()
-        
-        # Redis Vector Search Query
+
+        # Redis Vector Search Query with ef_runtime hint
         query = (
-            f"*=>[KNN {k} @{vector_field} $query_vec AS score]"
+            f"*=>[KNN {k} @{vector_field} $query_vec EF_RUNTIME {ef_runtime} AS score]"
         )
-        
+
         try:
             results = self.r.execute_command(
                 "FT.SEARCH", self.index_name, query,
@@ -168,14 +173,14 @@ class RedisVectorStore:
                 "LIMIT", "0", str(k),
                 "DIALECT", "2"
             )
-            
+
             count = results[0]
             discovered_ids = []
             for i in range(1, len(results), 2):
                 fields = results[i+1]
                 pid = fields[1].decode('utf-8') if isinstance(fields[1], bytes) else fields[1]
                 discovered_ids.append(uuid.UUID(pid))
-                
+
             return discovered_ids
         except Exception as e:
             logger.error(f"❌ Redis search failed on field @{vector_field}: {e}")

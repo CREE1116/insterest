@@ -66,11 +66,14 @@ class UnifiedDiscoveryModel(nn.Module):
         text_vec: torch.Tensor,                # [B, 768] SBERT text
         image_vec: torch.Tensor = None,        # [B, 512] CLIP image (optional)
         hashtag_vec: torch.Tensor = None,      # [B, 768] SBERT hashtag (optional)
+        num_hashtags: int = 0,                 # number of hashtags for dynamic weighting
     ) -> torch.Tensor:
-        # Enrich text with hashtag
+        # Enrich text with hashtag using dynamic weight based on hashtag count
+        # weight = 0.3 + 0.1 * min(num_hashtags, 5) → range [0.3, 0.8]
         if hashtag_vec is not None:
             mask_h = (torch.norm(hashtag_vec, dim=-1, keepdim=True) > 1e-6).float()
-            text_enriched = text_vec + 0.5 * hashtag_vec * mask_h
+            hashtag_weight = 0.3 + 0.1 * min(num_hashtags, 5)
+            text_enriched = text_vec + hashtag_weight * hashtag_vec * mask_h
             text_in = F.normalize(text_enriched, p=2, dim=-1)
         else:
             text_in = text_vec
