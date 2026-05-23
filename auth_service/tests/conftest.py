@@ -6,7 +6,7 @@ os.environ.setdefault("POSTGRES_DB", "test_db")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci")
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import AsyncClient, ASGITransport
 
 

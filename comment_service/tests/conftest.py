@@ -7,7 +7,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci")
 
 import uuid
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import AsyncClient, ASGITransport
 from jose import jwt as jose_jwt
 
