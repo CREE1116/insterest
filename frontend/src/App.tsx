@@ -9,7 +9,7 @@ import CreateModal from './components/CreateModal';
 import SettingsModal from './components/SettingsModal';
 import ImageSearchModal from './components/ImageSearchModal';
 import client from './api/client';
-import { useFeed, useSearch, useSavedIds, useCollections, useImageSearch, useHashtags, useHashtagSearch } from './hooks/usePostQueries';
+import { useFeed, useSearch, useSavedIds, useCollections, useImageSearch, useHashtagSearch } from './hooks/usePostQueries';
 
 const SkeletonCard: React.FC = () => (
   <div className="masonry-item" style={{ breakInside: 'avoid', marginBottom: '1.5rem', borderRadius: '24px', overflow: 'hidden', backgroundColor: '#f1f5f9', height: `${Math.random() * 200 + 200}px`, position: 'relative' }}>
@@ -31,6 +31,7 @@ const AppContent: React.FC = () => {
   const [newCollectionName, setNewCollectionName] = useState('');
   const [selectedCollection, setSelectedCollection] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<any[]>([]);
   const [searchImage, setSearchImage] = useState<File | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeHashtag, setActiveHashtag] = useState(''); // 선택된 해시태그 검색
@@ -55,6 +56,24 @@ const AppContent: React.FC = () => {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSuggestions([]);
+      return;
+    }
+    
+    const timer = setTimeout(async () => {
+      try {
+        const res = await client.get(`/discovery/suggestions`, { params: { q: searchQuery, limit: 10 } });
+        setSuggestions(Array.isArray(res.data) ? res.data : []);
+      } catch (err) {
+        console.error("Failed to fetch suggestions:", err);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const saveToHistory = (q: string) => {
     if (!q.trim()) return;
@@ -161,7 +180,7 @@ const AppContent: React.FC = () => {
   const feedPosts = infiniteFeedData?.pages.flatMap(page => page.posts) || [];
   const { data: searchResults, isFetching: searchLoading } = useSearch(isHashtagMode || searchImage ? '' : searchQuery);
   const { data: hashtagSearchResults, isFetching: hashtagSearchLoading } = useHashtagSearch(activeHashtag);
-  const { data: hashtagSuggestions = [] } = useHashtags(hashtagFilterQ);
+  // Removed useHashtags in favor of suggestions API
   const { data: imageSearchResults, isFetching: imageSearchLoading } = useImageSearch(searchImage, user?.id || user?.user_id);
   const { data: savedPostIds = [] } = useSavedIds(isLoggedIn);
   const { data: collections = [] } = useCollections(isLoggedIn && (viewMode === 'saved' || (viewMode === 'profile' && profileTab === 'folders')));
@@ -372,36 +391,77 @@ const AppContent: React.FC = () => {
 
               {/* 자동완성 드롭다운 */}
               <AnimatePresence>
-                {showSuggestions && !searchImage && (
+                {showSuggestions && !searchImage && suggestions.length > 0 && (
                   <motion.div
                     initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
                     transition={{ duration: 0.12 }}
                     style={{ position: 'absolute', top: '100%', left: 0, right: 0, backgroundColor: 'white', borderRadius: '0 0 20px 20px', boxShadow: '0 8px 24px rgba(0,0,0,0.1)', border: '1px solid #f1f5f9', borderTop: 'none', zIndex: 100, overflow: 'hidden', maxHeight: '320px', overflowY: 'auto' }}
                   >
-                    {/* 해시태그 섹션 */}
-                    {hashtagSuggestions.length > 0 && (
+                    {/* 1. 어휘 매칭 (Lexical / Hybrid) */}
+                    {suggestions.filter(s => s.source === 'lexical' || s.source === 'hybrid').length > 0 && (
                       <div>
-                        <div style={{ padding: '0.625rem 1.25rem 0.375rem', fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
-                          {isHashtagMode ? '해시태그' : '관련 해시태그'}
-                        </div>
-                        {hashtagSuggestions.slice(0, isHashtagMode ? 8 : 4).map(({ tag, count }) => (
-                          <button
-                            key={tag}
-                            onMouseDown={() => handleSelectSuggestion(tag, true)}
-                            style={{ width: '100%', textAlign: 'left', padding: '0.625rem 1.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'none', border: 'none', cursor: 'pointer', transition: 'background 0.1s' }}
-                            onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#f8fafc')}
-                            onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+                        <div style={{ padding: '0.625rem 1.25rem 0.375rem', fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', letterSpacing: '0.05em', fontFamily: "'Outfit', 'Inter', sans-serif" }}>해시태그</div>
+                        {suggestions.filter(s => s.source === 'lexical' || s.source === 'hybrid').map(s => (
+                          <motion.button
+                            key={s.keyword}
+                            onMouseDown={() => handleSelectSuggestion(s.keyword, true)}
+                            whileHover={{ x: 4, backgroundColor: 'hsl(210, 100%, 98%)' }}
+                            whileTap={{ scale: 0.98 }}
+                            style={{
+                              width: '100%',
+                              textAlign: 'left',
+                              padding: '0.625rem 1.25rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              fontFamily: "'Outfit', 'Inter', sans-serif",
+                              transition: 'background-color 0.2s ease, transform 0.1s ease'
+                            }}
                           >
-                            <span style={{ fontSize: '0.9375rem', fontWeight: 700, color: '#3b82f6' }}>#{tag}</span>
-                            <span style={{ fontSize: '0.8125rem', color: '#94a3b8', fontWeight: 600 }}>{count}개 게시물</span>
-                          </button>
+                            <span style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'hsl(217, 91%, 60%)' }}>#{s.keyword}</span>
+                          </motion.button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 2. 의미 매칭 (Semantic) */}
+                    {suggestions.filter(s => s.source === 'semantic').length > 0 && (
+                      <div style={{ borderTop: '1px solid hsl(210, 40%, 96%)', marginTop: '0.5rem', paddingTop: '0.5rem' }}>
+                        <div style={{ padding: '0.625rem 1.25rem 0.375rem', fontSize: '0.75rem', fontWeight: 800, color: 'hsl(243, 75%, 59%)', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: "'Outfit', 'Inter', sans-serif" }}>
+                          <span>💡 이런 연관 검색어도 있어요!</span>
+                        </div>
+                        {suggestions.filter(s => s.source === 'semantic').map(s => (
+                          <motion.button
+                            key={s.keyword}
+                            onMouseDown={() => handleSelectSuggestion(s.keyword, true)}
+                            whileHover={{ x: 4, backgroundColor: 'hsl(243, 100%, 97%)' }}
+                            whileTap={{ scale: 0.98 }}
+                            style={{
+                              width: '100%',
+                              textAlign: 'left',
+                              padding: '0.625rem 1.25rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              fontFamily: "'Outfit', 'Inter', sans-serif",
+                              transition: 'background-color 0.2s ease, transform 0.1s ease'
+                            }}
+                          >
+                            <span style={{ fontSize: '0.9375rem', fontWeight: 700, color: 'hsl(243, 75%, 59%)' }}>#{s.keyword}</span>
+                          </motion.button>
                         ))}
                       </div>
                     )}
 
                     {/* 최근 검색 기록 */}
                     {!isHashtagMode && searchHistory.filter(h => !searchQuery || h.toLowerCase().includes(searchQuery.toLowerCase())).length > 0 && (
-                      <div>
+                      <div style={{ borderTop: '1px solid #f1f5f9', marginTop: '0.5rem', paddingTop: '0.5rem' }}>
                         <div style={{ padding: '0.625rem 1.25rem 0.375rem', fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>최근 검색</div>
                         {searchHistory.filter(h => !searchQuery || h.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 4).map(h => (
                           <button
@@ -415,12 +475,6 @@ const AppContent: React.FC = () => {
                             <span style={{ fontSize: '0.9375rem', fontWeight: 600, color: '#334155' }}>{h}</span>
                           </button>
                         ))}
-                      </div>
-                    )}
-
-                    {hashtagSuggestions.length === 0 && searchHistory.length === 0 && (
-                      <div style={{ padding: '1.25rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem', fontWeight: 600 }}>
-                        # 을 입력하면 해시태그 검색
                       </div>
                     )}
                   </motion.div>
