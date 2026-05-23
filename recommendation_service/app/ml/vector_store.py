@@ -124,6 +124,9 @@ class RedisVectorStore:
             assert vector.shape[-1] == 128, f"Expected vector dimension 128, got {vector.shape[-1]}"
         if image_vector is not None:
             assert image_vector.shape[-1] == 128, f"Expected image_vector dimension 128, got {image_vector.shape[-1]}"
+            norm = np.linalg.norm(image_vector)
+            if norm > 1e-5:
+                image_vector = image_vector / norm
         if text_vector is not None:
             assert text_vector.shape[-1] == 768, f"Expected text_vector dimension 768, got {text_vector.shape[-1]}"
 

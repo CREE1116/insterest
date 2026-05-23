@@ -94,15 +94,18 @@ class UnifiedIntelligenceService:
                                         img = torch.zeros(1, 512, device=self.device)
                                         
                                     h_bytes = v.hashtag_vector
-                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)                                         if h_bytes and len(h_bytes) == 768 * 4 else None
+                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
                                     
-                                    hist_embs.append(self.model.get_item_embedding(c, img, h).squeeze(0))
+                                    meta = v.content_text or {}
+                                    hashtags_str = meta.get("hashtags", "")
+                                    num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
+                                    hist_embs.append(self.model.get_item_embedding(c, img, h, num_hashtags=num_hashtags).squeeze(0))
 
                             if hist_embs:
                                 seq_len = len(hist_embs)
                                 user_vec = torch.zeros(128, device=self.device)
                                 for idx, emb in enumerate(hist_embs):
-                                    weight = 0.5 ** (seq_len - 1 - idx)
+                                    weight = 0.8 ** (seq_len - 1 - idx)
                                     user_vec += weight * emb
                                 norm = torch.norm(user_vec)
                                 if norm > 1e-5:
@@ -142,6 +145,37 @@ class UnifiedIntelligenceService:
                         rrf_scores[pid] = rrf_scores.get(pid, 0.0) + weight / (k_rrf + (rank + 1))
 
                 sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+                # MMR reranking to diversify results (Relevance: 0.7, Diversity: 0.3)
+                mmr_candidates = sorted_items[:limit + skip + 50]
+                c_ids = [pid for pid, _ in mmr_candidates]
+                
+                def _fetch_vectors():
+                    pipe = vector_store.r.pipeline()
+                    for pid in c_ids:
+                        pipe.hget(f"post:{pid}", "vector")
+                    return pipe.execute()
+                
+                vec_results = await asyncio.to_thread(_fetch_vectors)
+                
+                embeddings = {}
+                for pid, vec_bytes in zip(c_ids, vec_results):
+                    if vec_bytes and len(vec_bytes) == 128 * 4:
+                        embeddings[pid] = np.frombuffer(vec_bytes, dtype=np.float32).copy()
+                    else:
+                        embeddings[pid] = np.zeros(128)
+                
+                reranked_pids = self._mmr_rerank(mmr_candidates, embeddings, lam=0.7, top_k=limit + skip)
+                
+                pid_to_score = dict(sorted_items)
+                sorted_items_reranked = [(pid, pid_to_score[pid]) for pid in reranked_pids]
+                
+                reranked_set = set(reranked_pids)
+                for pid, score in sorted_items:
+                    if pid not in reranked_set:
+                        sorted_items_reranked.append((pid, score))
+                
+                sorted_items = sorted_items_reranked
 
                 needed = skip + limit - len(sorted_items)
                 if needed > 0:
@@ -248,15 +282,18 @@ class UnifiedIntelligenceService:
                                         img = torch.zeros(1, 512, device=self.device)
                                         
                                     h_bytes = v.hashtag_vector
-                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)                                         if h_bytes and len(h_bytes) == 768 * 4 else None
+                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
                                         
-                                    hist_embs.append(self.model.get_item_embedding(c, img, h).squeeze(0))
+                                    meta = v.content_text or {}
+                                    hashtags_str = meta.get("hashtags", "")
+                                    num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
+                                    hist_embs.append(self.model.get_item_embedding(c, img, h, num_hashtags=num_hashtags).squeeze(0))
 
                             if hist_embs:
                                 seq_len = len(hist_embs)
                                 user_vec = torch.zeros(128, device=self.device)
                                 for idx, emb in enumerate(hist_embs):
-                                    weight = 0.5 ** (seq_len - 1 - idx)
+                                    weight = 0.8 ** (seq_len - 1 - idx)
                                     user_vec += weight * emb
                                 norm = torch.norm(user_vec)
                                 if norm > 1e-5:
@@ -285,6 +322,37 @@ class UnifiedIntelligenceService:
                     rrf_scores[pid] = rrf_scores.get(pid, 0.0) + weight / (k_rrf + (rank + 1))
 
             sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+            # MMR reranking to diversify results (Relevance: 0.7, Diversity: 0.3)
+            mmr_candidates = sorted_items[:limit + skip + 50]
+            c_ids = [pid for pid, _ in mmr_candidates]
+            
+            def _fetch_vectors_img():
+                pipe = vector_store.r.pipeline()
+                for pid in c_ids:
+                    pipe.hget(f"post:{pid}", "vector")
+                return pipe.execute()
+            
+            vec_results = await asyncio.to_thread(_fetch_vectors_img)
+            
+            embeddings = {}
+            for pid, vec_bytes in zip(c_ids, vec_results):
+                if vec_bytes and len(vec_bytes) == 128 * 4:
+                    embeddings[pid] = np.frombuffer(vec_bytes, dtype=np.float32).copy()
+                else:
+                    embeddings[pid] = np.zeros(128)
+            
+            reranked_pids = self._mmr_rerank(mmr_candidates, embeddings, lam=0.7, top_k=limit + skip)
+            
+            pid_to_score = dict(sorted_items)
+            sorted_items_reranked = [(pid, pid_to_score[pid]) for pid in reranked_pids]
+            
+            reranked_set = set(reranked_pids)
+            for pid, score in sorted_items:
+                if pid not in reranked_set:
+                    sorted_items_reranked.append((pid, score))
+            
+            sorted_items = sorted_items_reranked
 
             needed = skip + limit - len(sorted_items)
             if needed > 0:
@@ -361,6 +429,50 @@ class UnifiedIntelligenceService:
 
         return [pid for pid, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]]
 
+    def _mmr_rerank(
+        self,
+        candidates: List[tuple[str, float]],
+        embeddings: Dict[str, np.ndarray],
+        lam: float = 0.7,
+        top_k: int = None,
+    ) -> List[str]:
+        """
+        Maximal Marginal Relevance (MMR) reranking.
+        lam=0.7 (Relevance: 0.7, Diversity: 0.3)
+        """
+        if not candidates:
+            return []
+            
+        def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+            dot = np.dot(a, b)
+            na = np.linalg.norm(a)
+            nb = np.linalg.norm(b)
+            return dot / (na * nb + 1e-9)
+
+        top_k = top_k or len(candidates)
+        remaining = list(candidates)
+        selected: List[str] = []
+
+        while remaining and len(selected) < top_k:
+            best_pid, best_score = None, float("-inf")
+            for pid, rel_score in remaining:
+                emb = embeddings.get(pid)
+                if emb is None:
+                    emb = np.zeros(128)
+                
+                if not selected:
+                    mmr = lam * rel_score
+                else:
+                    max_sim = max(cosine_sim(emb, embeddings.get(s, np.zeros(128))) for s in selected)
+                    mmr = lam * rel_score - (1.0 - lam) * max_sim
+                if mmr > best_score:
+                    best_score = mmr
+                    best_pid = pid
+            selected.append(best_pid)
+            remaining = [(p, s) for p, s in remaining if p != best_pid]
+
+        return selected
+
     async def index_post(self, db: AsyncSession, post_id: uuid.UUID,
                          caption_vec: np.ndarray, hashtag_vec: np.ndarray, image_vec: np.ndarray,
                          metadata: Dict[str, Any]):
@@ -379,11 +491,13 @@ class UnifiedIntelligenceService:
             await db.commit()
 
             # 2. Redis Vector Store 저장 (실시간 검색용)
+            hashtags_str = metadata.get("hashtags", "") if metadata else ""
+            num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
             with torch.no_grad():
                 c = torch.from_numpy(caption_vec).to(self.device).unsqueeze(0)
                 img = torch.from_numpy(image_vec).to(self.device).unsqueeze(0)
                 h = torch.from_numpy(hashtag_vec).to(self.device).unsqueeze(0) if hashtag_vec is not None else None
-                p_vec = self.model.get_item_embedding(c, img, h).squeeze(0).cpu().numpy()
+                p_vec = self.model.get_item_embedding(c, img, h, num_hashtags=num_hashtags).squeeze(0).cpu().numpy()
 
             # 3. Project image vector to 128-dim
             with torch.no_grad():
@@ -436,14 +550,6 @@ class UnifiedIntelligenceService:
                         else:
                             img_t = torch.zeros(1, 512, device=self.device)
 
-                        h_bytes = p.hashtag_vector
-                        h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)                               if h_bytes and len(h_bytes) == 768 * 4 else None
-
-                        p_vec = self.model.get_item_embedding(c_t, img_t, h_t).squeeze(0).cpu().numpy()
-                        proj_img_vec = self.model.image_proj(img_t).squeeze(0).cpu().numpy()
-
-                    sbert_vec = c_t.squeeze(0).cpu().numpy()
-                    
                     # PostgreSQL에서 해시태그 조회하여 metadata에 hashtags 추가
                     tag_stmt = text("""
                         SELECT h.tag 
@@ -453,6 +559,19 @@ class UnifiedIntelligenceService:
                     """)
                     tag_res = await db.execute(tag_stmt, {"post_id": p.post_id})
                     hashtag_texts = [row[0] for row in tag_res.all()]
+                    num_hashtags = len(hashtag_texts)
+
+                    with torch.no_grad():
+                        h_bytes = p.hashtag_vector
+                        h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
+
+                        p_vec = self.model.get_item_embedding(c_t, img_t, h_t, num_hashtags=num_hashtags).squeeze(0).cpu().numpy()
+                        proj_img_vec = self.model.image_proj(img_t).squeeze(0).cpu().numpy()
+                        norm_img = np.linalg.norm(proj_img_vec)
+                        if norm_img > 1e-5:
+                            proj_img_vec = proj_img_vec / norm_img
+
+                    sbert_vec = c_t.squeeze(0).cpu().numpy()
                     
                     meta = dict(p.content_text or {})
                     meta["hashtags"] = ",".join(hashtag_texts)
@@ -597,22 +716,27 @@ class UnifiedIntelligenceService:
                     if len(cap_bytes) != 768 * 4:
                         meta = v.content_text or {}
                         mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
-                        c_t = nlp_embedder.embed_text(mood).unsqueeze(0) if mood else                               torch.zeros(1, 768)
+                        c_t = nlp_embedder.embed_text(mood).unsqueeze(0) if mood else torch.zeros(1, 768)
                     else:
                         c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).unsqueeze(0)
                     img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).unsqueeze(0)
                     h_bytes = v.hashtag_vector
-                    h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0)                           if h_bytes and len(h_bytes) == 768 * 4 else None
-                    raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None)
+                    h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
+                    
+                    meta = v.content_text or {}
+                    hashtags_str = meta.get("hashtags", "")
+                    num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
+                    
+                    raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None, num_hashtags)
 
             def _build_lookup() -> Dict[Any, torch.Tensor]:
                 lookup = {}
                 with torch.no_grad():
-                    for pid, (c, img, h) in raw_clip.items():
+                    for pid, (c, img, h, num_h) in raw_clip.items():
                         c_d = c.to(self.device)
                         img_d = img.to(self.device)
                         h_d = h.to(self.device) if h is not None else None
-                        lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0).detach()
+                        lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d, num_hashtags=num_h).squeeze(0).detach()
                 return lookup
 
             train_data = []
@@ -660,32 +784,34 @@ class UnifiedIntelligenceService:
                 n_batches = 0
                 for i in range(0, len(train_data), BATCH):
                     batch = train_data[i:i + BATCH]
-                    hist_embs, target_vecs, query_caps = [], [], []
+                    hist_embs, target_vecs, query_caps, target_images = [], [], [], []
                     for hist, target in batch:
                         h_embs = [item_emb_lookup[h_id] for h_id in hist]
                         while len(h_embs) < 10:
                             h_embs.insert(0, torch.zeros(128, device=self.device))
                         hist_embs.append(torch.stack(h_embs))
 
-                        c_raw, img_raw, h_raw = raw_clip[target]
+                        c_raw, img_raw, h_raw, num_h = raw_clip[target]
                         c_d = c_raw.to(self.device)
                         img_d = img_raw.to(self.device)
                         h_d = h_raw.to(self.device) if h_raw is not None else None
-                        target_vec = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0)
+                        target_vec = self.model.get_item_embedding(c_d, img_d, h_d, num_hashtags=num_h).squeeze(0)
                         target_vecs.append(target_vec)
                         query_caps.append(c_d.squeeze(0))
+                        target_images.append(img_d.squeeze(0))
 
                     pool_keys = list(item_emb_lookup.keys())
                     target_set = {target for _, target in batch}
                     neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
                     n_hard = min(64, len(neg_candidates))
-                    extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device)                                  if n_hard > 0 else None
+                    extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device) if n_hard > 0 else None
 
                     loss = self.trainer.train_user_query_step(
                         torch.stack(hist_embs),
                         torch.stack(target_vecs),
                         torch.stack(query_caps),
                         extra_negs,
+                        target_image_vecs=torch.stack(target_images),
                     )
                     total_loss += loss
                     n_batches += 1
@@ -740,17 +866,22 @@ class UnifiedIntelligenceService:
                                 c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).unsqueeze(0)
                             img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).unsqueeze(0)
                             h_bytes = v.hashtag_vector
-                            h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0)                                   if h_bytes and len(h_bytes) == 768 * 4 else None
-                            raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None)
+                            h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
+                            
+                            meta = v.content_text or {}
+                            hashtags_str = meta.get("hashtags", "")
+                            num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
+                            
+                            raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None, num_hashtags)
 
                     def _eval_build_lookup():
                         lookup = {}
                         with torch.no_grad():
-                            for pid, (c, img, h) in raw_clip.items():
+                            for pid, (c, img, h, num_h) in raw_clip.items():
                                 c_d = c.to(self.device)
                                 img_d = img.to(self.device)
                                 h_d = h.to(self.device) if h is not None else None
-                                lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d).squeeze(0).detach()
+                                lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d, num_hashtags=num_h).squeeze(0).detach()
                         return lookup
 
                     train_data = []
