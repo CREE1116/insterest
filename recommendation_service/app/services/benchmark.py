@@ -554,7 +554,7 @@ class BenchmarkService:
             idcg_t = 0.0
             for rank_idx in range(min(n, 3)):
                 idcg_t += 1.0 / np.log2(rank_idx + 2)
-            ndcg_t = (dcg_t / idcg_t) if idcg_t > 0 else 0.0
+            ndcg_t = (dcg_t / idcg_t) if idcg_t > 1e-9 else 0.0
             text_ndcgs.append(ndcg_t)
 
             txt_ranks = sorted([txt_ids.index(p) + 1 for p in class_pids if p in txt_ids])
@@ -581,7 +581,7 @@ class BenchmarkService:
                 idcg_i = 0.0
                 for rank_idx in range(min(len(other_pids), 3)):
                     idcg_i += 1.0 / np.log2(rank_idx + 2)
-                ndcg_i = (dcg_i / idcg_i) if idcg_i > 0 else 0.0
+                ndcg_i = (dcg_i / idcg_i) if idcg_i > 1e-9 else 0.0
 
                 img_ranks = sorted([img_ids.index(p) + 1 for p in other_pids if p in img_ids])
                 best_image_rank = img_ranks[0] if img_ranks else 999
