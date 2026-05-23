@@ -14,22 +14,37 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.entities.models import PostVector
 from app.ml.nlp import nlp_embedder
-from app.ml.model import UnifiedDiscoveryModel
-from app.ml.trainer import UnifiedDiscoveryTrainer
 
 logger = logging.getLogger(__name__)
 
 class UnifiedIntelligenceService:
     def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = UnifiedDiscoveryModel()
-        self.model.to(self.device)
-        self.trainer = UnifiedDiscoveryTrainer(self.model, device=self.device)
-        self.trainer.load_model(settings.MODEL_SAVE_PATH)
-        
         self._cf_item_users = None
         self._cf_cache_ts = 0.0
         self._last_loss_history = []
+
+    async def _fetch_512d_vectors(self, pids: List[str]) -> Dict[str, np.ndarray]:
+        """
+        Fetch 512-dim text_vector from Redis for a list of post IDs.
+        If a vector is missing, fallback to a 512-dim zero vector.
+        """
+        from app.ml.vector_store import vector_store
+        
+        def _fetch():
+            pipe = vector_store.r.pipeline()
+            for pid in pids:
+                pipe.hget(f"post:{pid}", "text_vector")
+            return pipe.execute()
+            
+        raw_vecs = await asyncio.to_thread(_fetch)
+        embeddings = {}
+        for pid, v_bytes in zip(pids, raw_vecs):
+            if v_bytes and len(v_bytes) == 512 * 4:
+                embeddings[pid] = np.frombuffer(v_bytes, dtype=np.float32).copy()
+            else:
+                embeddings[pid] = np.zeros(512, dtype=np.float32)
+        return embeddings
 
     async def discover(self, db: AsyncSession, query_text: str = None, user_id: uuid.UUID = None,
                        limit: int = 20, skip: int = 0, use_personalization: bool = True,
@@ -41,15 +56,40 @@ class UnifiedIntelligenceService:
 
             # 1. Pure Query Search Bypass
             if query_text:
-                sbert_vec = await asyncio.to_thread(nlp_embedder.embed_text, query_text)
-                sbert_vec_np = sbert_vec.cpu().numpy()
-                text_ids = vector_store.search_knn(sbert_vec_np, k=limit+skip+50, vector_field="text_vector")
+                clip_vec = await asyncio.to_thread(nlp_embedder.embed_text_clip, query_text)
+                clip_vec_np = clip_vec.cpu().numpy()
                 
-                results = []
-                for pid in text_ids:
+                text_ids = vector_store.search_knn(clip_vec_np, k=50, vector_field="text_vector")
+                image_ids = vector_store.search_knn(clip_vec_np, k=50, vector_field="image_vector")
+                
+                # Combine using RRF
+                rrf_scores: Dict[str, float] = {}
+                k_rrf = 60
+                for rank, pid in enumerate(text_ids):
                     pid_str = str(pid)
                     if pid_str not in exclude_set:
-                        results.append({"id": pid_str, "score": 1.0})
+                        rrf_scores[pid_str] = rrf_scores.get(pid_str, 0.0) + 1.0 / (k_rrf + rank + 1)
+                for rank, pid in enumerate(image_ids):
+                    pid_str = str(pid)
+                    if pid_str not in exclude_set:
+                        rrf_scores[pid_str] = rrf_scores.get(pid_str, 0.0) + 1.0 / (k_rrf + rank + 1)
+                        
+                sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+                
+                # MMR Reranking on search results
+                mmr_candidates = sorted_results[:limit + skip + 50]
+                c_ids = [pid for pid, _ in mmr_candidates]
+                embeddings = await self._fetch_512d_vectors(c_ids)
+                reranked_pids = self._mmr_rerank(mmr_candidates, embeddings, lam=0.7, top_k=limit + skip)
+                
+                pid_to_score = dict(sorted_results)
+                sorted_items_reranked = [(pid, pid_to_score[pid]) for pid in reranked_pids]
+                reranked_set = set(reranked_pids)
+                for pid, score in sorted_results:
+                    if pid not in reranked_set:
+                        sorted_items_reranked.append((pid, score))
+                        
+                results = [{"id": pid, "score": float(score)} for pid, score in sorted_items_reranked]
                 return results[skip: skip + limit]
 
             # If no query_text, perform personalization
@@ -57,7 +97,6 @@ class UnifiedIntelligenceService:
             k_search = max(200, limit * 3 + skip)
 
             # 2. User preference vector assembly via stateless exponential time-decay pooling
-            self.model.eval()
             user_vec = None
             if (user_id or history_ids) and use_personalization:
                 if not history_ids and user_id:
@@ -76,34 +115,49 @@ class UnifiedIntelligenceService:
                                 if h_id in p_vectors:
                                     v = p_vectors[h_id]
                                     cap_bytes = v.caption_vector
-                                    # caption_vector in DB is SBERT 768-dim
-                                    if len(cap_bytes) == 768 * 4:
+                                    if len(cap_bytes) == 512 * 4:
                                         c = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                     else:
                                         meta = v.content_text or {}
                                         mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
                                         if mood:
-                                            c = nlp_embedder.embed_text(mood).to(self.device).unsqueeze(0)
+                                            c = nlp_embedder.embed_text_clip(mood).to(self.device).unsqueeze(0)
                                         else:
-                                            c = torch.zeros(1, 768, device=self.device)
+                                            c = torch.zeros(1, 512, device=self.device)
                                             
                                     img_bytes = v.image_vector
-                                    if len(img_bytes) == 512 * 4:
+                                    if img_bytes and len(img_bytes) == 512 * 4:
                                         img = torch.from_numpy(np.frombuffer(img_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                     else:
                                         img = torch.zeros(1, 512, device=self.device)
                                         
                                     h_bytes = v.hashtag_vector
-                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
+                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 512 * 4 else None
                                     
                                     meta = v.content_text or {}
                                     hashtags_str = meta.get("hashtags", "")
                                     num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
-                                    hist_embs.append(self.model.get_item_embedding(c, img, h, num_hashtags=num_hashtags).squeeze(0))
+                                    
+                                    # Fuse in 512d space directly
+                                    if h is not None and torch.norm(h) > 1e-6:
+                                        hashtag_weight = 0.3 + 0.1 * min(num_hashtags, 5)
+                                        text_enriched = c + hashtag_weight * h
+                                        text_in = F.normalize(text_enriched, p=2, dim=-1)
+                                    else:
+                                        text_in = F.normalize(c, p=2, dim=-1) if torch.norm(c) > 1e-6 else c
+                                    
+                                    if img is not None and torch.norm(img) > 1e-6:
+                                        img_in = F.normalize(img, p=2, dim=-1)
+                                        fused = text_in + img_in
+                                        item_emb = F.normalize(fused, p=2, dim=-1).squeeze(0)
+                                    else:
+                                        item_emb = text_in.squeeze(0)
+                                        
+                                    hist_embs.append(item_emb)
 
                             if hist_embs:
                                 seq_len = len(hist_embs)
-                                user_vec = torch.zeros(128, device=self.device)
+                                user_vec = torch.zeros(512, device=self.device)
                                 for idx, emb in enumerate(hist_embs):
                                     weight = 0.8 ** (seq_len - 1 - idx)
                                     user_vec += weight * emb
@@ -116,9 +170,18 @@ class UnifiedIntelligenceService:
                     user_vec = await asyncio.to_thread(_get_user_vector)
 
             if user_vec is not None:
-                # E. ef_runtime=400 for personalization (high-recall mode)
-                user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector", ef_runtime=400)
-                rank_lists.append([str(pid) for pid in user_ids])
+                user_text_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="text_vector", ef_runtime=400)
+                user_image_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="image_vector", ef_runtime=400)
+                
+                user_rrf: Dict[str, float] = {}
+                k_rrf = 60
+                for rank, pid in enumerate(user_text_ids):
+                    user_rrf[str(pid)] = user_rrf.get(str(pid), 0.0) + 1.0 / (k_rrf + rank + 1)
+                for rank, pid in enumerate(user_image_ids):
+                    user_rrf[str(pid)] = user_rrf.get(str(pid), 0.0) + 1.0 / (k_rrf + rank + 1)
+                
+                sorted_user_ids = [pid for pid, _ in sorted(user_rrf.items(), key=lambda x: x[1], reverse=True)]
+                rank_lists.append(sorted_user_ids)
 
             # 3. Item-item Jaccard CF
             if history_ids:
@@ -126,18 +189,11 @@ class UnifiedIntelligenceService:
                 if cf_ids:
                     rank_lists.append(cf_ids)
 
-            # A. Adaptive RRF merge
-            # When user has history (personalization), double-weight personalization lists.
-            # When no personalization available, all lists contribute equally.
             if rank_lists:
                 rrf_scores: Dict[str, float] = {}
                 k_rrf = 60
-                # rank_lists layout: [user_vec_list, cf_list] (no query_text in this branch)
-                # Boost personalization signal when history is rich
                 personalization_boost = 2.0 if user_vec is not None else 1.0
                 for list_idx, r_list in enumerate(rank_lists):
-                    # list_idx==0 → user-tower search (personalization)
-                    # list_idx==1 → CF candidates
                     weight = personalization_boost if list_idx == 0 else 1.0
                     for rank, pid in enumerate(r_list):
                         if pid in exclude_set:
@@ -146,25 +202,11 @@ class UnifiedIntelligenceService:
 
                 sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
-                # MMR reranking to diversify results (Relevance: 0.7, Diversity: 0.3)
+                # MMR reranking to diversify results in 512d CLIP space
                 mmr_candidates = sorted_items[:limit + skip + 50]
                 c_ids = [pid for pid, _ in mmr_candidates]
                 
-                def _fetch_vectors():
-                    pipe = vector_store.r.pipeline()
-                    for pid in c_ids:
-                        pipe.hget(f"post:{pid}", "vector")
-                    return pipe.execute()
-                
-                vec_results = await asyncio.to_thread(_fetch_vectors)
-                
-                embeddings = {}
-                for pid, vec_bytes in zip(c_ids, vec_results):
-                    if vec_bytes and len(vec_bytes) == 128 * 4:
-                        embeddings[pid] = np.frombuffer(vec_bytes, dtype=np.float32).copy()
-                    else:
-                        embeddings[pid] = np.zeros(128)
-                
+                embeddings = await self._fetch_512d_vectors(c_ids)
                 reranked_pids = self._mmr_rerank(mmr_candidates, embeddings, lam=0.7, top_k=limit + skip)
                 
                 pid_to_score = dict(sorted_items)
@@ -180,7 +222,6 @@ class UnifiedIntelligenceService:
                 needed = skip + limit - len(sorted_items)
                 if needed > 0:
                     existing_ids = {pid for pid, _ in sorted_items} | exclude_set
-                    # B. Trending fallback: popularity × exp(-λ × hours_since_upload)
                     pad_stmt = text("""
                         SELECT p.id FROM upload.post p
                         LEFT JOIN (
@@ -204,7 +245,7 @@ class UnifiedIntelligenceService:
                 page = sorted_items[skip: skip + limit]
                 return [{"id": pid, "score": float(score)} for pid, score in page]
 
-            # B. Cold-start fallback trending: popularity × exp(-λ × hours_since_upload)
+            # B. Cold-start fallback trending
             stmt = text("""
                 SELECT p.id FROM upload.post p
                 LEFT JOIN (
@@ -234,20 +275,18 @@ class UnifiedIntelligenceService:
                 raw_img_vec = nlp_embedder.embed_image(image_bytes).to(self.device)
                 if torch.norm(raw_img_vec) < 1e-6:
                     raise ValueError("Image vector is zero")
-                # Project the 512-dim CLIP image vector to 128-dim using the model's image_proj
-                proj_img_vec = self.model.image_proj(raw_img_vec)
-                return F.normalize(proj_img_vec, p=2, dim=-1).squeeze(0).cpu().numpy()
+                return F.normalize(raw_img_vec, p=2, dim=-1).squeeze(0).cpu().numpy()
             
             img_norm = await asyncio.to_thread(_embed_image)
             k_search = max(200, limit * 3 + skip)
 
             rank_lists = []
 
-            # 1. 이미지 검색 랭킹 (128-dim projected image_vector)
+            # 1. 이미지 검색 랭킹 (512-dim CLIP image_vector)
             img_ids = vector_store.search_knn(img_norm, k=k_search, vector_field="image_vector")
             rank_lists.append([str(pid) for pid in img_ids])
 
-            # 2. 개인화 랭킹 (UserTower)
+            # 2. 개인화 랭킹
             user_vec = None
             if user_id and use_personalization:
                 stmt = text("SELECT post_id FROM interaction.likes WHERE user_id = :uid ORDER BY created_at ASC LIMIT 10")
@@ -265,33 +304,49 @@ class UnifiedIntelligenceService:
                                 if h_id in p_vectors:
                                     v = p_vectors[h_id]
                                     cap_bytes = v.caption_vector
-                                    if len(cap_bytes) == 768 * 4:
+                                    if len(cap_bytes) == 512 * 4:
                                         c = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                     else:
                                         meta = v.content_text or {}
                                         mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
                                         if mood:
-                                            c = nlp_embedder.embed_text(mood).to(self.device).unsqueeze(0)
+                                            c = nlp_embedder.embed_text_clip(mood).to(self.device).unsqueeze(0)
                                         else:
-                                            c = torch.zeros(1, 768, device=self.device)
+                                            c = torch.zeros(1, 512, device=self.device)
                                             
                                     img_bytes = v.image_vector
-                                    if len(img_bytes) == 512 * 4:
+                                    if img_bytes and len(img_bytes) == 512 * 4:
                                         img = torch.from_numpy(np.frombuffer(img_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
                                     else:
                                         img = torch.zeros(1, 512, device=self.device)
                                         
                                     h_bytes = v.hashtag_vector
-                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
+                                    h = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 512 * 4 else None
                                         
                                     meta = v.content_text or {}
                                     hashtags_str = meta.get("hashtags", "")
                                     num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
-                                    hist_embs.append(self.model.get_item_embedding(c, img, h, num_hashtags=num_hashtags).squeeze(0))
+                                    
+                                    # Fuse in 512d space directly
+                                    if h is not None and torch.norm(h) > 1e-6:
+                                        hashtag_weight = 0.3 + 0.1 * min(num_hashtags, 5)
+                                        text_enriched = c + hashtag_weight * h
+                                        text_in = F.normalize(text_enriched, p=2, dim=-1)
+                                    else:
+                                        text_in = F.normalize(c, p=2, dim=-1) if torch.norm(c) > 1e-6 else c
+                                    
+                                    if img is not None and torch.norm(img) > 1e-6:
+                                        img_in = F.normalize(img, p=2, dim=-1)
+                                        fused = text_in + img_in
+                                        item_emb = F.normalize(fused, p=2, dim=-1).squeeze(0)
+                                    else:
+                                        item_emb = text_in.squeeze(0)
+                                        
+                                    hist_embs.append(item_emb)
 
                             if hist_embs:
                                 seq_len = len(hist_embs)
-                                user_vec = torch.zeros(128, device=self.device)
+                                user_vec = torch.zeros(512, device=self.device)
                                 for idx, emb in enumerate(hist_embs):
                                     weight = 0.8 ** (seq_len - 1 - idx)
                                     user_vec += weight * emb
@@ -304,17 +359,24 @@ class UnifiedIntelligenceService:
                     user_vec = await asyncio.to_thread(_get_user_vector_image)
 
             if user_vec is not None:
-                user_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="vector")
-                rank_lists.append([str(pid) for pid in user_ids])
+                user_text_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="text_vector")
+                user_image_ids = vector_store.search_knn(user_vec, k=k_search, vector_field="image_vector")
+                
+                user_rrf: Dict[str, float] = {}
+                k_rrf = 60
+                for rank, pid in enumerate(user_text_ids):
+                    user_rrf[str(pid)] = user_rrf.get(str(pid), 0.0) + 1.0 / (k_rrf + rank + 1)
+                for rank, pid in enumerate(user_image_ids):
+                    user_rrf[str(pid)] = user_rrf.get(str(pid), 0.0) + 1.0 / (k_rrf + rank + 1)
+                
+                sorted_user_ids = [pid for pid, _ in sorted(user_rrf.items(), key=lambda x: x[1], reverse=True)]
+                rank_lists.append(sorted_user_ids)
 
             # A. Adaptive RRF merge for image search
-            # rank_lists layout: [image_list, user_personalization_list]
-            # Image search gets 1.0 weight; personalization gets 2.0 if available.
             exclude_set = set(str(i) for i in (exclude_history_ids or []))
             rrf_scores: Dict[str, float] = {}
             k_rrf = 60
             for list_idx, r_list in enumerate(rank_lists):
-                # list_idx==0 → image search, list_idx==1 → user personalization
                 weight = 2.0 if (list_idx == 1 and user_vec is not None) else 1.0
                 for rank, pid in enumerate(r_list):
                     if pid in exclude_set:
@@ -323,25 +385,11 @@ class UnifiedIntelligenceService:
 
             sorted_items = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
-            # MMR reranking to diversify results (Relevance: 0.7, Diversity: 0.3)
+            # MMR reranking to diversify results in 512d CLIP space
             mmr_candidates = sorted_items[:limit + skip + 50]
             c_ids = [pid for pid, _ in mmr_candidates]
             
-            def _fetch_vectors_img():
-                pipe = vector_store.r.pipeline()
-                for pid in c_ids:
-                    pipe.hget(f"post:{pid}", "vector")
-                return pipe.execute()
-            
-            vec_results = await asyncio.to_thread(_fetch_vectors_img)
-            
-            embeddings = {}
-            for pid, vec_bytes in zip(c_ids, vec_results):
-                if vec_bytes and len(vec_bytes) == 128 * 4:
-                    embeddings[pid] = np.frombuffer(vec_bytes, dtype=np.float32).copy()
-                else:
-                    embeddings[pid] = np.zeros(128)
-            
+            embeddings = await self._fetch_512d_vectors(c_ids)
             reranked_pids = self._mmr_rerank(mmr_candidates, embeddings, lam=0.7, top_k=limit + skip)
             
             pid_to_score = dict(sorted_items)
@@ -357,7 +405,6 @@ class UnifiedIntelligenceService:
             needed = skip + limit - len(sorted_items)
             if needed > 0:
                 existing_ids = {pid for pid, _ in sorted_items} | exclude_set
-                # B. Trending fallback: popularity × exp(-λ × hours_since_upload)
                 pad_stmt = text("""
                     SELECT p.id FROM upload.post p
                     LEFT JOIN (
@@ -458,16 +505,18 @@ class UnifiedIntelligenceService:
             for pid, rel_score in remaining:
                 emb = embeddings.get(pid)
                 if emb is None:
-                    emb = np.zeros(128)
+                    emb = np.zeros(512)
                 
                 if not selected:
                     mmr = lam * rel_score
                 else:
-                    max_sim = max(cosine_sim(emb, embeddings.get(s, np.zeros(128))) for s in selected)
+                    max_sim = max(cosine_sim(emb, embeddings.get(s, np.zeros(512))) for s in selected)
                     mmr = lam * rel_score - (1.0 - lam) * max_sim
                 if mmr > best_score:
                     best_score = mmr
                     best_pid = pid
+            if best_pid is None:
+                break
             selected.append(best_pid)
             remaining = [(p, s) for p, s in remaining if p != best_pid]
 
@@ -491,22 +540,7 @@ class UnifiedIntelligenceService:
             await db.commit()
 
             # 2. Redis Vector Store 저장 (실시간 검색용)
-            hashtags_str = metadata.get("hashtags", "") if metadata else ""
-            num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
-            with torch.no_grad():
-                c = torch.from_numpy(caption_vec).to(self.device).unsqueeze(0)
-                img = torch.from_numpy(image_vec).to(self.device).unsqueeze(0)
-                h = torch.from_numpy(hashtag_vec).to(self.device).unsqueeze(0) if hashtag_vec is not None else None
-                p_vec = self.model.get_item_embedding(c, img, h, num_hashtags=num_hashtags).squeeze(0).cpu().numpy()
-
-            # 3. Project image vector to 128-dim
-            with torch.no_grad():
-                proj_img_vec = self.model.image_proj(img).squeeze(0).cpu().numpy()
-
-            # SBERT 768-dim text_vector is caption_vec itself
-            sbert_vec = caption_vec
-
-            vector_store.upsert_vector(str(post_id), p_vec, text_vector=sbert_vec, image_vector=proj_img_vec, metadata=metadata)
+            vector_store.upsert_vector(str(post_id), text_vector=caption_vec, image_vector=image_vec, metadata=metadata)
 
         except Exception as e:
             logger.error(f"❌ Indexing failed for {post_id}: {e}")
@@ -523,32 +557,30 @@ class UnifiedIntelligenceService:
                     cap_bytes = p.caption_vector
                     img_bytes = p.image_vector
 
-                    with torch.no_grad():
-                        # If legacy 512-dim (or not 768-dim) -> recompute to SBERT 768-dim
-                        if len(cap_bytes) != 768 * 4:
-                            meta = p.content_text or {}
-                            caption = meta.get("caption", "")
-                            image_prompt = meta.get("image_prompt", "")
-                            music_prompt = meta.get("music_prompt", "")
-                            mood_text = f"{caption} {image_prompt} {music_prompt}".strip()
-                            if not mood_text:
-                                logger.warning(f"⚠️ No text for {p.post_id}, skipping backfill")
-                                continue
-                            c_t = nlp_embedder.embed_text(mood_text).unsqueeze(0).to(self.device)
-                            # Update DB record to new SBERT 768-dim vector
-                            new_cap_bytes = c_t.squeeze(0).cpu().numpy().astype(np.float32).tobytes()
-                            await db.execute(
-                                sa_update(PostVector)
-                                .where(PostVector.post_id == p.post_id)
-                                .values(caption_vector=new_cap_bytes)
-                            )
-                        else:
-                            c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
+                    # If legacy 768-dim (SBERT) -> recompute to CLIP 512-dim
+                    if len(cap_bytes) != 512 * 4:
+                        meta = p.content_text or {}
+                        caption = meta.get("caption", "")
+                        image_prompt = meta.get("image_prompt", "")
+                        music_prompt = meta.get("music_prompt", "")
+                        mood_text = f"{caption} {image_prompt} {music_prompt}".strip()
+                        if not mood_text:
+                            logger.warning(f"⚠️ No text for {p.post_id}, skipping backfill")
+                            continue
+                        c_t = nlp_embedder.embed_text_clip(mood_text).cpu().numpy()
+                        new_cap_bytes = c_t.astype(np.float32).tobytes()
+                        await db.execute(
+                            sa_update(PostVector)
+                            .where(PostVector.post_id == p.post_id)
+                            .values(caption_vector=new_cap_bytes)
+                        )
+                    else:
+                        c_t = np.frombuffer(cap_bytes, dtype=np.float32).copy()
 
-                        if len(img_bytes) == 512 * 4:
-                            img_t = torch.from_numpy(np.frombuffer(img_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0)
-                        else:
-                            img_t = torch.zeros(1, 512, device=self.device)
+                    if len(img_bytes) == 512 * 4:
+                        img_t = np.frombuffer(img_bytes, dtype=np.float32).copy()
+                    else:
+                        img_t = np.zeros(512, dtype=np.float32)
 
                     # PostgreSQL에서 해시태그 조회하여 metadata에 hashtags 추가
                     tag_stmt = text("""
@@ -559,24 +591,11 @@ class UnifiedIntelligenceService:
                     """)
                     tag_res = await db.execute(tag_stmt, {"post_id": p.post_id})
                     hashtag_texts = [row[0] for row in tag_res.all()]
-                    num_hashtags = len(hashtag_texts)
 
-                    with torch.no_grad():
-                        h_bytes = p.hashtag_vector
-                        h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).to(self.device).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
-
-                        p_vec = self.model.get_item_embedding(c_t, img_t, h_t, num_hashtags=num_hashtags).squeeze(0).cpu().numpy()
-                        proj_img_vec = self.model.image_proj(img_t).squeeze(0).cpu().numpy()
-                        norm_img = np.linalg.norm(proj_img_vec)
-                        if norm_img > 1e-5:
-                            proj_img_vec = proj_img_vec / norm_img
-
-                    sbert_vec = c_t.squeeze(0).cpu().numpy()
-                    
                     meta = dict(p.content_text or {})
                     meta["hashtags"] = ",".join(hashtag_texts)
-                    
-                    vector_store.upsert_vector(str(p.post_id), p_vec, text_vector=sbert_vec, image_vector=proj_img_vec, metadata=meta)
+
+                    vector_store.upsert_vector(str(p.post_id), text_vector=c_t, image_vector=img_t, metadata=meta)
                     count += 1
                 except Exception as e:
                     logger.error(f"❌ Backfill failed for {p.post_id}: {e}")
@@ -605,7 +624,7 @@ class UnifiedIntelligenceService:
             lexical_candidates = [row[0] for row in lex_res.all()]
 
             # 2. 의미론적 매칭 (Semantic Match)
-            q_vec = await asyncio.to_thread(nlp_embedder.embed_text, q)
+            q_vec = await asyncio.to_thread(nlp_embedder.embed_text_clip, q)
             q_vec_np = q_vec.cpu().numpy()
             
             # Redis KNN 검색 실행
@@ -686,225 +705,13 @@ class UnifiedIntelligenceService:
         asyncio.create_task(self.train_discovery(db))
 
     async def train_discovery(self, db: AsyncSession):
-        try:
-            total_start = time.time()
-            BATCH = 32
-
-            res = await db.execute(text("SELECT user_id, post_id FROM interaction.likes ORDER BY created_at ASC LIMIT 1000"))
-            rows = res.all()
-            user_sequences: Dict[Any, List] = {}
-            for uid, pid in rows:
-                user_sequences.setdefault(uid, []).append(pid)
-
-            res = await db.execute(select(PostVector))
-            all_vectors = res.scalars().all()
-            if not all_vectors:
-                logger.warning("⚠️ 포스트 데이터 없음")
-                return
-            p_vectors = {v.post_id: v for v in all_vectors}
-
-            if len(user_sequences) < 2:
-                logger.info("ℹ️ Skipped (not enough likes data — search only mode)")
-                return
-
-            logger.info("🟢 [UserTower] Soft CLIP training on SBERT/CLIP item embeddings...")
-
-            raw_clip: Dict[Any, tuple] = {}
-            with torch.no_grad():
-                for v in all_vectors:
-                    cap_bytes = v.caption_vector
-                    if len(cap_bytes) != 768 * 4:
-                        meta = v.content_text or {}
-                        mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
-                        c_t = nlp_embedder.embed_text(mood).unsqueeze(0) if mood else torch.zeros(1, 768)
-                    else:
-                        c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).unsqueeze(0)
-                    img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).unsqueeze(0)
-                    h_bytes = v.hashtag_vector
-                    h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
-                    
-                    meta = v.content_text or {}
-                    hashtags_str = meta.get("hashtags", "")
-                    num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
-                    
-                    raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None, num_hashtags)
-
-            def _build_lookup() -> Dict[Any, torch.Tensor]:
-                lookup = {}
-                with torch.no_grad():
-                    for pid, (c, img, h, num_h) in raw_clip.items():
-                        c_d = c.to(self.device)
-                        img_d = img.to(self.device)
-                        h_d = h.to(self.device) if h is not None else None
-                        lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d, num_hashtags=num_h).squeeze(0).detach()
-                return lookup
-
-            train_data = []
-            for uid, pids in user_sequences.items():
-                for i in range(1, len(pids)):
-                    hist = pids[:i][-10:]
-                    target = pids[i]
-                    if target in p_vectors and all(h in p_vectors for h in hist):
-                        train_data.append((hist, target))
-
-            loss_history = await asyncio.to_thread(
-                self._run_training_loop, raw_clip, train_data, _build_lookup, BATCH
-            )
-            self._last_loss_history = loss_history
-
-            logger.info("✅ [UserTower+Projection] Training complete.")
-            self.trainer.save_model(settings.MODEL_SAVE_PATH)
-            logger.info(f"✅ Total Training Pipeline: {time.time()-total_start:.2f}s")
-
-            logger.info("🔄 Re-indexing all items with updated projection layers...")
-            asyncio.create_task(self.backfill_all_posts(db))
-
-        except Exception as e:
-            logger.error(f"❌ Training failure: {e}", exc_info=True)
-
-    def _run_training_loop(self, raw_clip, train_data, build_lookup_fn, BATCH=32) -> list:
-        item_emb_lookup = build_lookup_fn()
-        EPOCHS = 100
-        PATIENCE = 5
-        MIN_DELTA = 0.001
-        self.model.train()
-        loss_history = []
-
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.trainer.optimizer, T_max=EPOCHS, eta_min=1e-6
-        )
-
-        best_loss = float("inf")
-        patience_counter = 0
-
-        try:
-            for epoch in range(EPOCHS):
-                random.shuffle(train_data)
-                total_loss = 0.0
-                n_batches = 0
-                for i in range(0, len(train_data), BATCH):
-                    batch = train_data[i:i + BATCH]
-                    hist_embs, target_vecs, query_caps, target_images = [], [], [], []
-                    for hist, target in batch:
-                        h_embs = [item_emb_lookup[h_id] for h_id in hist]
-                        while len(h_embs) < 10:
-                            h_embs.insert(0, torch.zeros(128, device=self.device))
-                        hist_embs.append(torch.stack(h_embs))
-
-                        c_raw, img_raw, h_raw, num_h = raw_clip[target]
-                        c_d = c_raw.to(self.device)
-                        img_d = img_raw.to(self.device)
-                        h_d = h_raw.to(self.device) if h_raw is not None else None
-                        target_vec = self.model.get_item_embedding(c_d, img_d, h_d, num_hashtags=num_h).squeeze(0)
-                        target_vecs.append(target_vec)
-                        query_caps.append(c_d.squeeze(0))
-                        target_images.append(img_d.squeeze(0))
-
-                    pool_keys = list(item_emb_lookup.keys())
-                    target_set = {target for _, target in batch}
-                    neg_candidates = [item_emb_lookup[k] for k in pool_keys if k not in target_set]
-                    n_hard = min(64, len(neg_candidates))
-                    extra_negs = torch.stack(random.sample(neg_candidates, n_hard)).to(self.device) if n_hard > 0 else None
-
-                    loss = self.trainer.train_user_query_step(
-                        torch.stack(hist_embs),
-                        torch.stack(target_vecs),
-                        torch.stack(query_caps),
-                        extra_negs,
-                        target_image_vecs=torch.stack(target_images),
-                    )
-                    total_loss += loss
-                    n_batches += 1
-
-                scheduler.step()
-                avg_loss = total_loss / max(n_batches, 1)
-                loss_history.append({"epoch": epoch + 1, "loss": round(avg_loss, 4)})
-                logger.info(f"  Epoch {epoch+1}/{EPOCHS} avg_loss={avg_loss:.4f} lr={scheduler.get_last_lr()[0]:.2e}")
-
-                if avg_loss < best_loss - MIN_DELTA:
-                    best_loss = avg_loss
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                    if patience_counter >= PATIENCE:
-                        logger.info(f"⏹ Early stopping at epoch {epoch+1} (no improvement for {PATIENCE} epochs)")
-                        break
-        finally:
-            self.model.eval()
-
-        return loss_history
+        logger.info("🟢 [UserTower] Pure CLIP space is active. Zero-training mode: skipping training.")
+        return
 
     async def evaluate_offline(self, db: AsyncSession):
         try:
-            logger.info("📊 [Eval] Phase 1/2: Training on current data...")
-
-            loss_history: list = []
-            try:
-                BATCH = 32
-                res = await db.execute(text(
-                    "SELECT user_id, post_id FROM interaction.likes ORDER BY created_at ASC LIMIT 1000"
-                ))
-                rows = res.all()
-                user_sequences: Dict[Any, List] = {}
-                for uid, pid in rows:
-                    user_sequences.setdefault(uid, []).append(pid)
-
-                res2 = await db.execute(select(PostVector))
-                all_vectors = res2.scalars().all()
-                p_vectors = {v.post_id: v for v in all_vectors}
-
-                if all_vectors and len(user_sequences) >= 1:
-                    raw_clip: Dict[Any, tuple] = {}
-                    with torch.no_grad():
-                        for v in all_vectors:
-                            cap_bytes = v.caption_vector
-                            if len(cap_bytes) != 768 * 4:
-                                meta = v.content_text or {}
-                                mood = f"{meta.get('caption', '')} {meta.get('image_prompt', '')} {meta.get('music_prompt', '')}".strip()
-                                c_t = nlp_embedder.embed_text(mood).unsqueeze(0) if mood else torch.zeros(1, 768)
-                            else:
-                                c_t = torch.from_numpy(np.frombuffer(cap_bytes, dtype=np.float32).copy()).unsqueeze(0)
-                            img_t = torch.from_numpy(np.frombuffer(v.image_vector, dtype=np.float32).copy()).unsqueeze(0)
-                            h_bytes = v.hashtag_vector
-                            h_t = torch.from_numpy(np.frombuffer(h_bytes, dtype=np.float32).copy()).unsqueeze(0) if h_bytes and len(h_bytes) == 768 * 4 else None
-                            
-                            meta = v.content_text or {}
-                            hashtags_str = meta.get("hashtags", "")
-                            num_hashtags = len([t for t in hashtags_str.split(",") if t.strip()]) if hashtags_str else 0
-                            
-                            raw_clip[v.post_id] = (c_t.cpu(), img_t.cpu(), h_t.cpu() if h_t is not None else None, num_hashtags)
-
-                    def _eval_build_lookup():
-                        lookup = {}
-                        with torch.no_grad():
-                            for pid, (c, img, h, num_h) in raw_clip.items():
-                                c_d = c.to(self.device)
-                                img_d = img.to(self.device)
-                                h_d = h.to(self.device) if h is not None else None
-                                lookup[pid] = self.model.get_item_embedding(c_d, img_d, h_d, num_hashtags=num_h).squeeze(0).detach()
-                        return lookup
-
-                    train_data = []
-                    for uid, pids in user_sequences.items():
-                        for i in range(1, len(pids)):
-                            hist = pids[:i][-10:]
-                            target = pids[i]
-                            if target in p_vectors and all(h in p_vectors for h in hist):
-                                train_data.append((hist, target))
-
-                    if len(train_data) >= 2:
-                        loss_history = await asyncio.to_thread(
-                            self._run_training_loop, raw_clip, train_data, _eval_build_lookup, BATCH
-                        )
-                        self._last_loss_history = loss_history
-                        self.trainer.save_model(settings.MODEL_SAVE_PATH)
-                        logger.info(f"✅ [Eval] Phase 1 done. {len(loss_history)} loss points recorded.")
-                    else:
-                        logger.info("ℹ️ [Eval] Skipped training (insufficient training pairs).")
-                else:
-                    logger.info("ℹ️ [Eval] Skipped training (no interaction data).")
-            except Exception as e:
-                logger.warning(f"⚠️ [Eval] Training phase failed, using current model: {e}")
+            logger.info("📊 [Eval] Zero-training mode active: skipping Phase 1 (training phase).")
+            loss_history = []
 
             logger.info("📊 [Eval] Phase 2/2: Measuring NDCG/Recall...")
             

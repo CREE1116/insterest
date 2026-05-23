@@ -51,15 +51,15 @@ async def consume_post_created():
                     hashtags = post_data.get("hashtags", [])
                     hashtag_texts = [h["tag"] if isinstance(h, dict) else str(h) for h in hashtags]
 
-                    # (A) 무드 텍스트 벡터 (SBERT 768-dim)
-                    c_vec = nlp_embedder.embed_text(mood_text).cpu().numpy() if mood_text else np.zeros(768, dtype=np.float32)
+                    # (A) 무드 텍스트 벡터 (CLIP 512-dim)
+                    c_vec = nlp_embedder.embed_text_clip(mood_text).cpu().numpy() if mood_text else np.zeros(512, dtype=np.float32)
 
-                    # (B) 해시태그 평균 벡터 (SBERT 768-dim, DB 저장용)
+                    # (B) 해시태그 평균 벡터 (CLIP 512-dim, DB 저장용)
                     if hashtag_texts:
-                        h_vecs = nlp_embedder.embed_batch(hashtag_texts)
+                        h_vecs = nlp_embedder.embed_batch_clip(hashtag_texts)
                         h_vec = torch.mean(h_vecs, dim=0).cpu().numpy()
                     else:
-                        h_vec = np.zeros(768, dtype=np.float32)
+                        h_vec = np.zeros(512, dtype=np.float32)
 
                     # (C) 이미지 벡터 (CLIP 512-dim)
                     i_vec = np.zeros(512, dtype=np.float32)

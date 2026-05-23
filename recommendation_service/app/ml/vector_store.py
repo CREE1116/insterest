@@ -19,7 +19,7 @@ class RedisVectorStore:
         self.index_name = "post_vectors"
 
     def create_index(self):
-        """인덱스 생성. 이미 올바른 트리플 스키마로 존재하면 그대로 재사용."""
+        """인덱스 생성. 이미 올바른 스키마로 존재하면 그대로 재사용."""
         try:
             try:
                 info = self.r.execute_command("FT.INFO", self.index_name)
@@ -29,7 +29,8 @@ class RedisVectorStore:
                     info_dict[k] = info[i+1]
                 
                 attributes = info_dict.get("attributes", [])
-                vector_dim = None
+                text_vector_dim = None
+                has_vector = False
                 for attr in attributes:
                     attr_dict = {}
                     for j in range(0, len(attr) - 1, 2):
@@ -38,14 +39,16 @@ class RedisVectorStore:
                     ident = attr_dict.get("identifier")
                     ident_str = ident.decode('utf-8') if isinstance(ident, bytes) else ident
                     if ident_str == "vector":
-                        vector_dim = attr_dict.get("dim")
-                        if isinstance(vector_dim, bytes):
-                            vector_dim = int(vector_dim)
-                        elif isinstance(vector_dim, (str, int)):
-                            vector_dim = int(vector_dim)
+                        has_vector = True
+                    elif ident_str == "text_vector":
+                        text_vector_dim = attr_dict.get("dim")
+                        if isinstance(text_vector_dim, bytes):
+                            text_vector_dim = int(text_vector_dim)
+                        elif isinstance(text_vector_dim, (str, int)):
+                            text_vector_dim = int(text_vector_dim)
                 
-                if vector_dim != 128:
-                    logger.warning(f"⚠️ Redis index doesn't have 128-dim (found {vector_dim}). Dropping to migrate...")
+                if has_vector or text_vector_dim != 512:
+                    logger.warning(f"⚠️ Redis index doesn't match 512-dim Pure CLIP Space (found text_vector dim {text_vector_dim}, has_vector {has_vector}). Dropping to migrate...")
                     self.r.execute_command("FT.DROPINDEX", self.index_name)
             except Exception as e:
                 logger.debug(f"Index check failed or not found: {e}")
@@ -56,20 +59,16 @@ class RedisVectorStore:
                 "PREFIX", "1", "post:",
                 "SCHEMA",
                 "post_id", "TAG",
-                "vector", "VECTOR", "HNSW", "6",
-                "TYPE", "FLOAT32",
-                "DIM", "128",
-                "DISTANCE_METRIC", "COSINE",
                 "text_vector", "VECTOR", "HNSW", "6",
                 "TYPE", "FLOAT32",
-                "DIM", "768",
+                "DIM", "512",
                 "DISTANCE_METRIC", "COSINE",
                 "image_vector", "VECTOR", "HNSW", "6",
                 "TYPE", "FLOAT32",
-                "DIM", "128",
+                "DIM", "512",
                 "DISTANCE_METRIC", "COSINE",
             )
-            logger.info(f"✅ Created CLIP 128-dim & SBERT 768-dim Triple Redis HNSW Index: {self.index_name}")
+            logger.info(f"✅ Created Pure CLIP 512-dim Redis HNSW Index: {self.index_name}")
         except redis.exceptions.ResponseError as e:
             if "Index already exists" in str(e):
                 logger.info(f"✅ Redis index '{self.index_name}' already exists, reusing.")
@@ -87,20 +86,16 @@ class RedisVectorStore:
                         "PREFIX", "1", "post:",
                         "SCHEMA",
                         "post_id", "TAG",
-                        "vector", "VECTOR", "HNSW", "6",
-                        "TYPE", "FLOAT32",
-                        "DIM", "128",
-                        "DISTANCE_METRIC", "COSINE",
                         "text_vector", "VECTOR", "HNSW", "6",
                         "TYPE", "FLOAT32",
-                        "DIM", "768",
+                        "DIM", "512",
                         "DISTANCE_METRIC", "COSINE",
                         "image_vector", "VECTOR", "HNSW", "6",
                         "TYPE", "FLOAT32",
-                        "DIM", "128",
+                        "DIM", "512",
                         "DISTANCE_METRIC", "COSINE",
                     )
-                    logger.info(f"✅ Recreated Redis index with triple HNSW schema: {self.index_name}")
+                    logger.info(f"✅ Recreated Redis index with 512-dim Pure CLIP schema: {self.index_name}")
                 except redis.exceptions.ResponseError as e2:
                     logger.error(f"❌ Failed to recreate Redis index: {e2}")
 
@@ -116,26 +111,22 @@ class RedisVectorStore:
         except Exception:
             return 0
 
-    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray, text_vector: np.ndarray = None, metadata: Dict[str, Any] = None, image_vector: np.ndarray = None):
+    def upsert_vector(self, post_id: uuid.UUID, vector: np.ndarray = None, text_vector: np.ndarray = None, metadata: Dict[str, Any] = None, image_vector: np.ndarray = None):
         """
-        128-dim projected vector, SBERT 768-dim vector, and metadata stored in Redis
+        CLIP 512-dim vectors and metadata stored in Redis
         """
-        if vector is not None:
-            assert vector.shape[-1] == 128, f"Expected vector dimension 128, got {vector.shape[-1]}"
         if image_vector is not None:
-            assert image_vector.shape[-1] == 128, f"Expected image_vector dimension 128, got {image_vector.shape[-1]}"
+            assert image_vector.shape[-1] == 512, f"Expected image_vector dimension 512, got {image_vector.shape[-1]}"
             norm = np.linalg.norm(image_vector)
             if norm > 1e-5:
                 image_vector = image_vector / norm
         if text_vector is not None:
-            assert text_vector.shape[-1] == 768, f"Expected text_vector dimension 768, got {text_vector.shape[-1]}"
+            assert text_vector.shape[-1] == 512, f"Expected text_vector dimension 512, got {text_vector.shape[-1]}"
 
         key = f"post:{post_id}"
-        vector_bytes = vector.astype(np.float32).tobytes()
         
         mapping = {
-            "post_id": str(post_id),
-            "vector": vector_bytes
+            "post_id": str(post_id)
         }
 
         if text_vector is not None:

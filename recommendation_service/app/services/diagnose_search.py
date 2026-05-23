@@ -1,26 +1,18 @@
 import asyncio
-import torch
 import numpy as np
-from sqlalchemy import select, text
+from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
 from app.ml.nlp import nlp_embedder
 from app.entities.models import PostVector
-from app.ml.model import UnifiedDiscoveryModel
-from sqlalchemy.ext.asyncio import AsyncSession
-import torch.nn.functional as F
-
-# 1. 모델 로드
-model = UnifiedDiscoveryModel()
-# 실제 환경에서는 학습된 가중치를 로드해야 합니다.
-# model.load_state_dict(torch.load("/data/models/discovery_engine.pth", map_location='cpu'))
-model.eval()
 
 async def diagnose(query_text: str):
     print(f"\n🧪 --- 상세 검색 진단: '{query_text}' ---")
     
     # 2. 검색어 벡터화
-    raw_query_vec = nlp_embedder.embed_text(query_text).unsqueeze(0)
-    query_vec = model.get_query_embedding(raw_query_vec)
+    query_vec = nlp_embedder.embed_text_clip(query_text).cpu().numpy()
+    norm_q = np.linalg.norm(query_vec)
+    if norm_q > 1e-5:
+        query_vec = query_vec / norm_q
     
     async with AsyncSessionLocal() as db:
         # 3. DB에서 모든 포스트 벡터와 캡션 가져오기
@@ -30,13 +22,18 @@ async def diagnose(query_text: str):
         scores = []
         for post in posts:
             # 바이너리 벡터 복원
-            item_vec = torch.from_numpy(np.frombuffer(post.caption_vector, dtype=np.float32)).unsqueeze(0)
-            # 투영 (Project to 128-dim)
-            with torch.no_grad():
-                item_emb = model.get_item_embedding(item_vec)
+            cap_bytes = post.caption_vector
+            if not cap_bytes:
+                continue
+            item_vec = np.frombuffer(cap_bytes, dtype=np.float32).copy()
+            if len(item_vec) != 512:
+                continue
+            norm_i = np.linalg.norm(item_vec)
+            if norm_i > 1e-5:
+                item_vec = item_vec / norm_i
                 
             # 유사도 계산
-            similarity = F.cosine_similarity(query_vec, item_emb).item()
+            similarity = float(np.dot(query_vec, item_vec))
             
             caption = post.content_text.get('caption', 'N/A') if post.content_text else "N/A"
             scores.append((similarity, caption))
