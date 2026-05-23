@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Volume2, VolumeX, Heart, MessageCircle, Bookmark, Trash2, Send, FolderPlus, ChevronRight, Edit3 } from 'lucide-react';
+import { X, Volume2, VolumeX, Heart, MessageCircle, Bookmark, Trash2, Send, FolderPlus, ChevronRight, Edit3, Share2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import client from '../api/client';
 import { usePostStats, usePostComments, useCollections, useToggleLikeMutation, useCommentMutation } from '../hooks/usePostQueries';
@@ -42,7 +42,19 @@ const PostModal: React.FC<PostModalProps> = ({ post, isSavedInitial = false, onC
   const [editHashtags, setEditHashtags] = useState(post.hashtags?.map((h: any) => h.tag).join(', ') || '');
   const [newCollectionName, setNewCollectionName] = useState('');
   const [saveStatus, setSaveStatus] = useState('');
+  const [shareStatus, setShareStatus] = useState('');
   const saveMenuRef = useRef<HTMLDivElement>(null);
+
+  const handleShareClick = async () => {
+    const shareUrl = `${window.location.origin}?post=${post.id}`;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setShareStatus('링크가 클립보드에 복사되었습니다.');
+      setTimeout(() => setShareStatus(''), 2000);
+    } catch (err) {
+      alert('링크 복사에 실패했습니다.');
+    }
+  };
 
   // 외부 클릭 시 저장 메뉴 닫기
   useEffect(() => {
@@ -262,8 +274,37 @@ const PostModal: React.FC<PostModalProps> = ({ post, isSavedInitial = false, onC
           </div>
 
           <div style={{ padding: '1.25rem 1.5rem', borderTop: '1px solid var(--border-color)', position: 'relative' }}>
+            <AnimatePresence>
+              {shareStatus && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                  style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: '1.5rem',
+                    right: '1.5rem',
+                    marginBottom: '0.5rem',
+                    backgroundColor: '#1a1a1a',
+                    color: 'white',
+                    padding: '0.75rem 1rem',
+                    borderRadius: '12px',
+                    fontSize: '0.875rem',
+                    fontWeight: 700,
+                    textAlign: 'center',
+                    boxShadow: 'var(--shadow-md)',
+                    zIndex: 100,
+                    pointerEvents: 'none'
+                  }}
+                >
+                  {shareStatus}
+                </motion.div>
+              )}
+            </AnimatePresence>
             <div style={{ display: 'flex', gap: '1.25rem', marginBottom: '0.75rem', alignItems: 'center' }}>
               <motion.button whileTap={{ scale: 0.8 }} onClick={handleToggleLike} style={{ color: isLiked ? 'var(--primary-red)' : 'var(--text-main)', border: 'none', backgroundColor: 'transparent', padding: 0 }}><Heart size={28} fill={isLiked ? 'var(--primary-red)' : 'none'} strokeWidth={2.5} /></motion.button>
+              <motion.button whileTap={{ scale: 0.8 }} onClick={handleShareClick} style={{ color: 'var(--text-main)', border: 'none', backgroundColor: 'transparent', padding: 0 }} title="공유하기"><Share2 size={28} strokeWidth={2.5} /></motion.button>
               
               {(user?.id === post.user_id || user?.user_id === post.user_id) && (
                 <div style={{ display: 'flex', gap: '1rem' }}>
