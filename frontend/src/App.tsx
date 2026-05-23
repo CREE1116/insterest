@@ -88,6 +88,38 @@ const AppContent: React.FC = () => {
   const { checkAuth } = useAuth();
   const qc = useQueryClient();
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const postId = params.get('post');
+    if (postId) {
+      const fetchPost = async () => {
+        try {
+          const res = await client.get(`/upload/content/${postId}`);
+          const postData = res.data;
+          if (postData) {
+            if (postData.user_id) {
+              try {
+                const userRes = await client.get(`/users/batch?user_ids=${postData.user_id}`);
+                if (userRes.data && userRes.data.length > 0) {
+                  postData.author = userRes.data[0];
+                }
+              } catch (userErr) {
+                console.error("Failed to fetch author for shared post:", userErr);
+              }
+            }
+            setSelectedPost(postData);
+          }
+        } catch (err) {
+          console.error("Failed to fetch shared post:", err);
+          const url = new URL(window.location.href);
+          url.searchParams.delete('post');
+          window.history.replaceState({}, '', url.pathname + url.search);
+        }
+      };
+      fetchPost();
+    }
+  }, []);
+
   // React Query Hooks
   const { 
     data: infiniteFeedData, 
@@ -590,6 +622,11 @@ const AppContent: React.FC = () => {
             onClose={() => { 
               setSelectedPost(null); 
               qc.invalidateQueries({ queryKey: ['savedIds'] }); 
+              const url = new URL(window.location.href);
+              if (url.searchParams.has('post')) {
+                url.searchParams.delete('post');
+                window.history.replaceState({}, '', url.pathname + url.search);
+              }
             }} 
             onDelete={() => {
               qc.invalidateQueries({ queryKey: ['feed'] });
