@@ -6,7 +6,7 @@ os.environ.setdefault("POSTGRES_DB", "test_db")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci")
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 
 
@@ -30,24 +30,14 @@ def mock_db():
 @pytest.fixture
 async def client(mock_db):
     from app.main import app
-    from app.db.session import get_db, engine
+    from app.db.session import get_db
 
     async def override_get_db():
         yield mock_db
 
     app.dependency_overrides[get_db] = override_get_db
 
-    mock_conn = MagicMock()
-    mock_conn.run_sync = AsyncMock()
-    mock_conn.execute = AsyncMock()
-
-    class _FakeCtx:
-        async def __aenter__(self):
-            return mock_conn
-        async def __aexit__(self, *a):
-            pass
-
-    with patch("sqlalchemy.ext.asyncio.AsyncEngine.begin", return_value=_FakeCtx()):
+    with patch("app.main.startup", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
 
