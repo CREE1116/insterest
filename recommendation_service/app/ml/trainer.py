@@ -32,6 +32,7 @@ class UnifiedDiscoveryTrainer:
         target_item_vecs: torch.Tensor,          # [B, 128]
         query_sbert_vecs: torch.Tensor,          # [B, 768] SBERT query
         extra_negatives: torch.Tensor = None,    # [M, 128] hard negatives
+        target_image_vecs: torch.Tensor = None,  # [B, 512] CLIP image (optional)
     ) -> float:
         self.model.train()
         self.optimizer.zero_grad()
@@ -78,6 +79,30 @@ class UnifiedDiscoveryTrainer:
 
         loss = (loss_u2i + loss_i2u) / 2.0
 
+        # Auxiliary Contrastive InfoNCE Loss to align text and image spaces
+        if target_image_vecs is not None:
+            image_norms = torch.norm(target_image_vecs, dim=-1)
+            valid_mask = image_norms > 1e-5
+            if valid_mask.sum() > 1:
+                valid_txt = query_sbert_vecs[valid_mask]
+                valid_img = target_image_vecs[valid_mask]
+                
+                proj_text = self.model.text_proj(F.normalize(valid_txt, p=2, dim=-1))
+                proj_text = F.normalize(proj_text, p=2, dim=-1)
+                
+                proj_image = self.model.image_proj(valid_img)
+                proj_image = F.normalize(proj_image, p=2, dim=-1)
+                
+                logits_txt_img = torch.matmul(proj_text, proj_image.T) / self.temperature
+                logits_img_txt = logits_txt_img.T
+                
+                labels = torch.arange(logits_txt_img.size(0), device=self.device)
+                loss_txt_img = F.cross_entropy(logits_txt_img, labels)
+                loss_img_txt = F.cross_entropy(logits_img_txt, labels)
+                
+                loss_infonce = (loss_txt_img + loss_img_txt) / 2.0
+                loss = loss + 0.1 * loss_infonce
+
         loss.backward()
 
         # Scale text projection update gradients by 0.2 to prevent semantic drift
@@ -91,9 +116,9 @@ class UnifiedDiscoveryTrainer:
         return loss.item()
 
     def train_user_query_step(self, user_histories, target_item_vecs, caption_vecs_for_query,
-                              extra_negatives=None):
+                              extra_negatives=None, target_image_vecs=None):
         return self.train_step(user_histories, target_item_vecs, caption_vecs_for_query,
-                               extra_negatives)
+                               extra_negatives, target_image_vecs)
 
     def save_model(self, path: str):
         import os
@@ -106,11 +131,35 @@ class UnifiedDiscoveryTrainer:
 
     def load_model(self, path: str):
         import os
-        if not os.path.exists(path):
-            logger.warning(f"⚠️ Model file not found at {path}, skipping load.")
-            return
-        try:
-            self.model.load_state_dict(torch.load(path, map_location=self.device), strict=False)
-            logger.info(f"✅ Model loaded from {path}")
-        except Exception as e:
-            logger.warning(f"Could not load model from {path}: {e}")
+        loaded = False
+        
+        # 1. Primary path loading
+        if os.path.exists(path):
+            try:
+                self.model.load_state_dict(torch.load(path, map_location=self.device), strict=False)
+                logger.info(f"✅ Model loaded from {path}")
+                loaded = True
+            except Exception as e:
+                logger.warning(f"Could not load model from primary path {path}: {e}")
+
+        # 2. Fallback paths loading
+        if not loaded:
+            fallback_paths = [
+                "./discovery_engine.pth",
+                "./app/ml/models/discovery_engine.pth",
+                "../discovery_engine.pth",
+                "/app/ml/models/discovery_engine.pth",
+                "/workspace/recommendation_service/discovery_engine.pth"
+            ]
+            for fallback in fallback_paths:
+                if os.path.exists(fallback):
+                    try:
+                        self.model.load_state_dict(torch.load(fallback, map_location=self.device), strict=False)
+                        logger.info(f"✅ Model loaded from fallback path: {fallback}")
+                        loaded = True
+                        break
+                    except Exception as e:
+                        logger.warning(f"Could not load model from fallback {fallback}: {e}")
+
+        if not loaded:
+            logger.warning(f"⚠️ Model file not found or readable at {path} or fallbacks, serving with randomized/initial weights.")

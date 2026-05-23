@@ -532,6 +532,8 @@ class BenchmarkService:
 
         text_hits = {1: [], 3: [], 5: []}
         image_hits = {1: [], 3: [], 5: []}
+        text_ndcgs = []
+        image_ndcgs = []
         details = []
 
         for class_name, idx_to_pid in class_post_ids.items():
@@ -543,6 +545,18 @@ class BenchmarkService:
                 db=db, query_text=class_name, limit=search_limit, use_personalization=False
             )
             txt_ids = [uuid.UUID(r["id"]) if isinstance(r["id"], str) else r["id"] for r in txt_results]
+            
+            # Text→Image NDCG@3
+            dcg_t = 0.0
+            for rank_idx, pid in enumerate(txt_ids[:3]):
+                if pid in class_pids:
+                    dcg_t += 1.0 / np.log2(rank_idx + 2)
+            idcg_t = 0.0
+            for rank_idx in range(min(n, 3)):
+                idcg_t += 1.0 / np.log2(rank_idx + 2)
+            ndcg_t = (dcg_t / idcg_t) if idcg_t > 0 else 0.0
+            text_ndcgs.append(ndcg_t)
+
             txt_ranks = sorted([txt_ids.index(p) + 1 for p in class_pids if p in txt_ids])
             best_text_rank = txt_ranks[0] if txt_ranks else 999
             for k in [1, 3, 5]:
@@ -550,6 +564,7 @@ class BenchmarkService:
 
             # Image→Image: first sample → find other samples of same class
             best_image_rank = 999
+            ndcg_i = 0.0
             if 0 in idx_to_pid and per_class.get(class_name):
                 img_bytes = await asyncio.to_thread(self._cifar_img_to_bytes, per_class[class_name][0])
                 img_results = await intel_service.discover_by_image(
@@ -557,6 +572,17 @@ class BenchmarkService:
                 )
                 img_ids = [uuid.UUID(r["id"]) if isinstance(r["id"], str) else r["id"] for r in img_results]
                 other_pids = class_pids - {idx_to_pid[0]}
+                
+                # Image→Image NDCG@3
+                dcg_i = 0.0
+                for rank_idx, pid in enumerate(img_ids[:3]):
+                    if pid in other_pids:
+                        dcg_i += 1.0 / np.log2(rank_idx + 2)
+                idcg_i = 0.0
+                for rank_idx in range(min(len(other_pids), 3)):
+                    idcg_i += 1.0 / np.log2(rank_idx + 2)
+                ndcg_i = (dcg_i / idcg_i) if idcg_i > 0 else 0.0
+
                 img_ranks = sorted([img_ids.index(p) + 1 for p in other_pids if p in img_ids])
                 best_image_rank = img_ranks[0] if img_ranks else 999
                 for k in [1, 3, 5]:
@@ -564,6 +590,8 @@ class BenchmarkService:
             else:
                 for k in [1, 3, 5]:
                     image_hits[k].append(0.0)
+            
+            image_ndcgs.append(ndcg_i)
 
             details.append({
                 "name": class_name,
@@ -574,15 +602,10 @@ class BenchmarkService:
                 "sample_count": n,
             })
 
-        ndcg_map = {1: 1.0, 2: 0.63, 3: 0.5, 4: 0.43, 5: 0.38}
         t2i = {f"Recall@{k}": float(np.mean(text_hits[k])) for k in [1, 3, 5]}
         i2i = {f"Recall@{k}": float(np.mean(image_hits[k])) for k in [1, 3, 5]}
-        t2i["NDCG@3"] = float(np.mean([
-            ndcg_map.get(d["text_rank"], 0.0) if isinstance(d["text_rank"], int) and d["text_rank"] <= 3 else 0.0
-            for d in details]))
-        i2i["NDCG@3"] = float(np.mean([
-            ndcg_map.get(d["image_rank"], 0.0) if isinstance(d["image_rank"], int) and d["image_rank"] <= 3 else 0.0
-            for d in details]))
+        t2i["NDCG@3"] = float(np.mean(text_ndcgs))
+        i2i["NDCG@3"] = float(np.mean(image_ndcgs))
 
         return {
             "status": "success",
