@@ -444,7 +444,20 @@ class UnifiedIntelligenceService:
 
                     sbert_vec = c_t.squeeze(0).cpu().numpy()
                     
-                    vector_store.upsert_vector(str(p.post_id), p_vec, text_vector=sbert_vec, image_vector=proj_img_vec, metadata=p.content_text)
+                    # PostgreSQL에서 해시태그 조회하여 metadata에 hashtags 추가
+                    tag_stmt = text("""
+                        SELECT h.tag 
+                        FROM upload.hashtag h
+                        JOIN upload.post_hashtag ph ON h.id = ph.hashtag_id
+                        WHERE ph.post_id = :post_id
+                    """)
+                    tag_res = await db.execute(tag_stmt, {"post_id": p.post_id})
+                    hashtag_texts = [row[0] for row in tag_res.all()]
+                    
+                    meta = dict(p.content_text or {})
+                    meta["hashtags"] = ",".join(hashtag_texts)
+                    
+                    vector_store.upsert_vector(str(p.post_id), p_vec, text_vector=sbert_vec, image_vector=proj_img_vec, metadata=meta)
                     count += 1
                 except Exception as e:
                     logger.error(f"❌ Backfill failed for {p.post_id}: {e}")
@@ -453,6 +466,95 @@ class UnifiedIntelligenceService:
             logger.info(f"✅ Backfilled {count}/{len(posts)} posts to Redis.")
         except Exception as e:
             logger.error(f"❌ Backfill failed: {e}")
+
+    async def get_search_suggestions(self, db: AsyncSession, q: str, limit: int = 10) -> List[Dict[str, Any]]:
+        from app.ml.vector_store import vector_store
+        try:
+            # 1. 어휘적 접두사 매칭 (Lexical Match)
+            prefix = f"{q}%"
+            lex_limit = max(limit * 5, 100)
+            lex_stmt = text("""
+                SELECT h.tag, COUNT(ph.post_id) as cnt
+                FROM upload.hashtag h
+                LEFT JOIN upload.post_hashtag ph ON h.id = ph.hashtag_id
+                WHERE h.tag ILIKE :prefix
+                GROUP BY h.tag
+                ORDER BY cnt DESC
+                LIMIT :lim
+            """)
+            lex_res = await db.execute(lex_stmt, {"prefix": prefix, "lim": lex_limit})
+            lexical_candidates = [row[0] for row in lex_res.all()]
+
+            # 2. 의미론적 매칭 (Semantic Match)
+            q_vec = await asyncio.to_thread(nlp_embedder.embed_text, q)
+            q_vec_np = q_vec.cpu().numpy()
+            
+            # Redis KNN 검색 실행
+            discovered_ids = vector_store.search_knn(q_vec_np, k=50, vector_field="text_vector")
+            
+            # Redis Pipeline 활용하여 각 포스트 ID에 대한 hashtags 가져오기
+            def _fetch_hashtags():
+                pipe = vector_store.r.pipeline()
+                for pid in discovered_ids:
+                    pipe.hget(f"post:{pid}", "hashtags")
+                return pipe.execute()
+
+            results = await asyncio.to_thread(_fetch_hashtags)
+            
+            # 랭크 기반 가중치 누적
+            sem_scores = {}
+            for rank, h_bytes in enumerate(results):
+                if not h_bytes:
+                    continue
+                h_str = h_bytes.decode('utf-8')
+                tags = [t.strip() for t in h_str.split(",") if t.strip()]
+                weight = 1.0 / (rank + 1)
+                for tag in tags:
+                    sem_scores[tag] = sem_scores.get(tag, 0.0) + weight
+
+            # 가중치 기준 내림차순 정렬하여 의미론적 매칭 후보 생성
+            semantic_candidates = [tag for tag, score in sorted(sem_scores.items(), key=lambda x: x[1], reverse=True)]
+
+            # 3. RRF (Reciprocal Rank Fusion) 융합
+            all_tags = set(lexical_candidates) | set(semantic_candidates)
+            rrf_scores = {}
+            w_lex = 1.5
+            w_sem = 1.0
+            k_rrf = 60
+
+            for h in all_tags:
+                score = 0.0
+                if h in lexical_candidates:
+                    rank_lex = lexical_candidates.index(h) + 1
+                    score += w_lex / (k_rrf + rank_lex)
+                if h in semantic_candidates:
+                    rank_sem = semantic_candidates.index(h) + 1
+                    score += w_sem / (k_rrf + rank_sem)
+                rrf_scores[h] = score
+
+            # 융합 결과 정렬 및 중복 제거
+            sorted_suggestions = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+            suggestions = []
+            for tag, score in sorted_suggestions[:limit]:
+                is_lex = tag in lexical_candidates
+                is_sem = tag in semantic_candidates
+                if is_lex and is_sem:
+                    source = "hybrid"
+                elif is_lex:
+                    source = "lexical"
+                else:
+                    source = "semantic"
+                suggestions.append({
+                    "keyword": tag,
+                    "type": "hashtag",
+                    "score": round(score, 4),
+                    "source": source
+                })
+            return suggestions
+
+        except Exception as e:
+            logger.error(f"❌ Error in get_search_suggestions: {e}", exc_info=True)
+            return []
 
     async def remove_post(self, post_id: uuid.UUID):
         from app.ml.vector_store import vector_store

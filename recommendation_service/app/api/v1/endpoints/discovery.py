@@ -76,6 +76,23 @@ async def discovery_search(
     )
     return [r["id"] for r in results]
 
+from pydantic import BaseModel
+
+class SuggestionResponse(BaseModel):
+    keyword: str
+    type: str
+    score: float
+    source: str
+
+@router.get("/suggestions", response_model=List[SuggestionResponse])
+async def get_suggestions(
+    q: str = Query(..., description="검색어 prefix"),
+    limit: int = Query(10, description="최대 제안 개수"),
+    db: AsyncSession = Depends(get_db)
+):
+    """추천 검색어/연관 해시태그 제안 API"""
+    return await intel_service.get_search_suggestions(db, q, limit)
+
 @router.post("/sync")
 async def sync_index(
     db: AsyncSession = Depends(get_db)

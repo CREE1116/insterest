@@ -79,7 +79,12 @@ async def consume_post_created():
                     async with AsyncSessionLocal() as db:
                         await intel_service.index_post(
                             db, post_id, c_vec, h_vec, i_vec,
-                            metadata={"caption": caption, "image_prompt": image_prompt, "music_prompt": music_prompt}
+                            metadata={
+                                "caption": caption,
+                                "image_prompt": image_prompt,
+                                "music_prompt": music_prompt,
+                                "hashtags": ",".join(hashtag_texts)
+                            }
                         )
                         logger.info(f"✅ indexing complete for {post_id}")
                         
