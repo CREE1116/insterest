@@ -33,10 +33,11 @@ on:
       - '.github/workflows/**'
   workflow_dispatch:
 
-# Issues 쓰기 권한 명시 (테스트 실패 시 이슈 생성에 필요)
+# Issues/PR 쓰기 권한 명시
 permissions:
   contents: read
   issues: write
+  pull-requests: read
 
 jobs:
   # ── 1. 테스트 ────────────────────────────────────────────────────────────────
@@ -65,11 +66,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check if service changed
         uses: dorny/paths-filter@v3
         id: filter
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
           filters: |
             changed:
               - '${{ matrix.service.path }}/**'
@@ -140,11 +145,15 @@ jobs:
           - { name: 'console-frontend',        path: 'console_frontend' }
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check if service changed
         uses: dorny/paths-filter@v3
         id: filter
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
           filters: |
             changed:
               - '${{ matrix.service.path }}/**'
