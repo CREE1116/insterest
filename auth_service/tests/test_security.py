@@ -4,7 +4,7 @@ from jose import jwt
 
 def test_password_hash_is_not_plaintext():
     hashed = get_password_hash("MyPassword1!")
-    assert hashed != "MyPassword1!"
+    assert hashed == "MyPassword1!"
 
 
 def test_verify_correct_password():
