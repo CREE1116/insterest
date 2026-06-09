@@ -3,8 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db
 from app.models.media import Content, Post, ContentType
 import uuid
-import json
-from typing import List, Optional
+from typing import Optional
 
 router = APIRouter()
 
@@ -37,26 +36,17 @@ async def create_upload(
 
     # 3. Save Content Metadata
     new_content = Content(
+        user_id=author_id,
         content_type=content_type,
-        author_id=author_id,
-        prompt=prompt
     )
     db.add(new_content)
-    await db.flush() # ID 생성을 위해 flush
+    await db.flush()
 
-    # 4. Handle Hashtags
-    tag_list = []
-    if hashtags:
-        try:
-            tag_list = json.loads(hashtags)
-        except json.JSONDecodeError:
-            tag_list = [tag.strip() for tag in hashtags.split(",")]
-
-    # 5. Save Post Metadata
+    # 4. Save Post Metadata
     new_post = Post(
         content_id=new_content.id,
-        body=body,
-        hashtags=tag_list
+        user_id=author_id,
+        caption=body,
     )
     db.add(new_post)
     await db.commit()

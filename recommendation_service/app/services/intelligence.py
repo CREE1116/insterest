@@ -282,9 +282,18 @@ class UnifiedIntelligenceService:
 
             rank_lists = []
 
-            # 1. 이미지 검색 랭킹 (512-dim CLIP image_vector)
-            img_ids = vector_store.search_knn(img_norm, k=k_search, vector_field="image_vector")
-            rank_lists.append([str(pid) for pid in img_ids])
+            # 1. 이미지 검색 랭킹: CLIP 이미지 벡터로 image_vector + text_vector 크로스모달 RRF
+            # CLIP 공간에서 이미지 임베딩은 텍스트 공간과도 정렬되어 있으므로 두 인덱스 모두 탐색
+            img_image_ids = vector_store.search_knn(img_norm, k=k_search, vector_field="image_vector")
+            img_text_ids = vector_store.search_knn(img_norm, k=k_search, vector_field="text_vector")
+
+            img_rrf: Dict[str, float] = {}
+            _k = 60
+            for rank, pid in enumerate(img_image_ids):
+                img_rrf[str(pid)] = img_rrf.get(str(pid), 0.0) + 1.0 / (_k + rank + 1)
+            for rank, pid in enumerate(img_text_ids):
+                img_rrf[str(pid)] = img_rrf.get(str(pid), 0.0) + 1.0 / (_k + rank + 1)
+            rank_lists.append([pid for pid, _ in sorted(img_rrf.items(), key=lambda x: x[1], reverse=True)])
 
             # 2. 개인화 랭킹
             user_vec = None
@@ -377,7 +386,8 @@ class UnifiedIntelligenceService:
             rrf_scores: Dict[str, float] = {}
             k_rrf = 60
             for list_idx, r_list in enumerate(rank_lists):
-                weight = 2.0 if (list_idx == 1 and user_vec is not None) else 1.0
+                # 이미지 검색(idx=0)이 주신호, 개인화(idx=1)는 보조 — 반대로 하면 쿼리 이미지 무시됨
+                weight = 1.0 if (list_idx == 1 and user_vec is not None) else 2.0
                 for rank, pid in enumerate(r_list):
                     if pid in exclude_set:
                         continue
@@ -577,9 +587,11 @@ class UnifiedIntelligenceService:
                     else:
                         c_t = np.frombuffer(cap_bytes, dtype=np.float32).copy()
 
-                    if len(img_bytes) == 512 * 4:
+                    if img_bytes and len(img_bytes) == 512 * 4:
                         img_t = np.frombuffer(img_bytes, dtype=np.float32).copy()
                     else:
+                        # image_vector 없음 → 이미지 검색 품질 저하. Kafka 재소비 또는 /sync 재실행 필요
+                        logger.warning(f"⚠️ post {p.post_id} has no valid image_vector — image search will be degraded for this post")
                         img_t = np.zeros(512, dtype=np.float32)
 
                     # PostgreSQL에서 해시태그 조회하여 metadata에 hashtags 추가
